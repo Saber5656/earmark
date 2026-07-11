@@ -166,6 +166,6 @@ LLM summary/“radio show” ScriptGenerator; translation cache by content hash;
 
 ## 9. Process notes
 
-- GitHub Issues are created from these files only after this plan and the drafts pass Codex review (repository workflow requirement). One GitHub Issue per file, English title = the file's Title.
+- GitHub Issues are created from these files only after this plan and the drafts pass Codex review (repository workflow requirement). One GitHub Issue per file, English title = the file's Title. Created 2026-07-11: docs 01–31 ↔ GitHub issues **#2–#32** (offset +1 — PR #1 consumed number 1), labels `v1` + `wave-N`.
 - Each implementation PR references its issue and must include the issue's Validation evidence.
 - New scope discovered mid-implementation gets a new `docs/issues/NN-*.md` first (docs are canonical), then a GitHub Issue.

@@ -758,7 +758,7 @@ Reference machine: Apple Silicon, 16 GB+. 10 articles × ~1,500 ja-chars-equival
 ## 18. Packaging & release
 
 - npm package `earmark` (name verified available 2026-07-11), semver starting `0.1.0`, `engines.node: ">=22"`, `bin: {"earmark": "dist/cli/index.js"}`, `files: ["dist", "README.md", "LICENSE"]`, build via `tsc`.
-- License: MIT (owner sign-off required before first public publish — flagged in issue 31).
+- License: MIT, `Copyright (c) 2026 Saber5656` (owner-confirmed 2026-07-11).
 - Publishing itself is a manual gate (out of v1 issues; issue 31 prepares a checklist incl. `npm pack` content review and history scan per repo policy).
 
 ## 19. Traceability

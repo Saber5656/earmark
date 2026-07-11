@@ -18,11 +18,11 @@ v1 ends at "ready to publish" (DESIGN §18): the owner performs `npm publish` ma
    - `description`: `Turn read-later articles into a daily local TTS podcast digest (macOS)`
    - `keywords`: `["tts","podcast","read-later","text-to-speech","voicevox","kokoro","cli","macos"]`
    - `repository`: `{"type":"git","url":"git+https://github.com/Saber5656/earmark.git"}`; `bugs`: `https://github.com/Saber5656/earmark/issues`; `homepage`: `https://github.com/Saber5656/earmark#readme`
-   - `author`: `Saber5656` (owner may substitute a display name at sign-off; see OWNER gate below)
-   - `license`: `MIT` (pending gate below); `engines.node: ">=22"`; `files: ["dist","README.md","LICENSE"]` (DESIGN §18 — docs stay on GitHub)
+   - `author`: `Saber5656`
+   - `license`: `MIT`; `engines.node: ">=22"`; `files: ["dist","README.md","LICENSE"]` (DESIGN §18 — docs stay on GitHub)
    - `publishConfig`: `{"access":"public"}` only — **no `provenance`** (requires CI/OIDC publishing; v1 is manual; future CI provenance is a RELEASING.md note)
    - bin executable: build step ensures `dist/cli/index.js` keeps its shebang and the pack/install path yields an executable `earmark` (verified by the smoke script).
-2. **License sign-off gate**: MIT and the copyright line (`Copyright (c) 2026 Saber5656`) require recorded owner confirmation (issue link/comment). If not confirmed by implementation time: STOP and ask; do not add LICENSE or publish metadata on assumption.
+2. **License** (owner-confirmed 2026-07-11 during the v1 requirements session; recorded in the design PR): MIT, copyright line `Copyright (c) 2026 Saber5656`. Add the standard MIT `LICENSE` file accordingly.
 3. Dependency pinning audit:
    - `better-sqlite3` and `kokoro-js` pinned exact (no `^`)
    - transitive `onnxruntime-node` (via kokoro-js) pinned via `package.json` `overrides` to the exact version kokoro-js@1.2.1 resolves to; evidence: `npm ls onnxruntime-node better-sqlite3 kokoro-js` output in `docs/RELEASING.md`
@@ -45,7 +45,7 @@ v1 ends at "ready to publish" (DESIGN §18): the owner performs `npm publish` ma
 ## Acceptance Criteria
 
 - [ ] `scripts/smoke-pack.sh` passes locally and in CI: exact-set tarball allowlist; sandboxed global install runs the three commands; nothing written outside the sandbox; lifecycle-script grep clean.
-- [ ] LICENSE present **with linked owner sign-off** for MIT + copyright holder — or the issue is explicitly blocked on that and says so.
+- [ ] LICENSE present: standard MIT text, `Copyright (c) 2026 Saber5656` (owner-confirmed 2026-07-11; the design PR records the decision).
 - [ ] `npm ls` pinning evidence for `better-sqlite3`, `kokoro-js`, `onnxruntime-node` (overrides effective) recorded in RELEASING.md; `npm audit --omit=dev --audit-level=high` clean.
 - [ ] `package.json` fields byte-match req 1 (test or reviewer diff against the literal values above).
 - [ ] CHANGELOG + RELEASING complete; RELEASING includes the history-scan gate and the provenance deferral note.

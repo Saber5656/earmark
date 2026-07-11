@@ -15,7 +15,7 @@ Insurance for U1 (kokoro-js may not load on some Node/macOS combos) and for user
 ## Detailed Requirements
 
 1. Constructor `new SayProvider(cfg.tts.en.say, ffmpegPath, cacheDir, logger)`; `id='say'`, `lang='en'`.
-2. `checkAvailability()`: `/usr/bin/say` exists+executable AND configured voice appears in `execFile('/usr/bin/say', ['-v','?'])` output (line-prefix match, case-sensitive) → ok; missing voice → `{ok:false, detail:"voice <v> not installed — System Settings → Accessibility → Spoken Content, or pick another (say -v '?')"}`; non-darwin platform → `{ok:false, detail:"say provider is macOS-only"}`.
+2. `checkAvailability()`: `/usr/bin/say` exists+executable AND the configured voice matches a line of `execFile('/usr/bin/say', ['-v','?'])` output. Exact matcher (voices may contain spaces, e.g. "Bad News"): a line matches iff `line.startsWith(cfg.voice)` AND the character at `line[cfg.voice.length]` is whitespace (the output format is `Name<whitespace>lang<whitespace># comment`); comparison case-sensitive. Missing voice → `{ok:false, detail:"voice <v> not installed — System Settings → Accessibility → Spoken Content, or pick another (say -v '?')"}`; non-darwin platform (injected platform getter) → `{ok:false, detail:"say provider is macOS-only"}`.
 3. `synthesize(utterance, outWavPath)`:
    - write utterance text to `<workdir-temp>.txt` (UTF-8) — **text never appears in argv** (immune to `-`-prefixed text and length limits; DESIGN §10.5)
    - `execFile('/usr/bin/say', ['-v', cfg.voice, '-r', String(cfg.wordsPerMinute), '-o', tmpAiff, '-f', txtPath])`, timeout 120 s
@@ -27,9 +27,10 @@ Insurance for U1 (kokoro-js may not load on some Node/macOS combos) and for user
 
 ## Acceptance Criteria
 
-- [ ] Arg-construction unit tests (execFile injected/spied): exact argv arrays for say and ffmpeg incl. text starting with `-rate`, containing `"; rm -rf ~"`, newlines, and 5,000 chars — text only ever lands in the temp file (spy asserts argv never contains it).
+- [ ] Arg-construction unit tests (execFile injected/spied): exact argv arrays for say (`['-v', voice, '-r', wpm, '-o', tmpAiff, '-f', txtPath]`) and ffmpeg; hostile texts (leading `-rate`, `"; rm -rf ~"`, newlines, 5,000 chars) only ever land in the temp file — the spy reads the temp file **during** the say call and asserts byte-exact UTF-8 content incl. newlines and the leading `-`; argv never contains the text.
 - [ ] Temp files removed on success and on ffmpeg failure.
-- [ ] `checkAvailability` matrix: ok / missing voice / non-darwin (mock `process.platform` via injected platform getter).
+- [ ] Voice matcher table: exact name, name-with-space ("Bad News"), prefix-collision ("Sam" must not match "Samantha"), case mismatch → correct accept/reject each.
+- [ ] `checkAvailability` matrix: ok / missing voice / non-darwin (injected platform getter).
 - [ ] Darwin integration test (CI macos runner: real say + real ffmpeg): synthesize "Good morning." → WAV at 24 kHz mono 16-bit, duration 300–3000 ms; runs in CI (not gated) since both tools exist on `macos-14`.
 
 ## Validation
@@ -46,4 +47,4 @@ Japanese via say; voice installation automation; quality tuning beyond rate; mak
 
 ## Design References
 
-DESIGN §10.5, §13.1 B6, §9.3; research/local-tts-selection.md; ISSUE_PLAN U1.
+DESIGN §10.5 (text via temp file + `-f` — the canonical contract), §13.1 B6, §9.3; research/local-tts-selection.md; ISSUE_PLAN U1.

@@ -2,49 +2,60 @@
 
 ## Summary
 
-Implement `src/tts/types.ts` (the `TtsProvider` interface and utterance model), the shared utterance splitter (sentence-merging with language-specific length limits), a dependency-free silence-WAV generator, and a WAV header duration reader. These fix the audio contract every provider and the assembler rely on.
+Implement `src/tts/types.ts` (the `TtsProvider` interface and utterance model), the shared utterance splitter (sentence-merging with language-specific target limits), and `src/audio/wav.ts`: dependency-free silence-WAV generation, PCM16 WAV writing, and a robust WAV header/duration reader. These fix the audio contract every provider and the assembler rely on.
 
 ## Context
 
-ADR-004 keeps providers thin; sizing text into engine-friendly utterances and producing standard intermediate audio (24 kHz/16-bit/mono PCM WAV — DESIGN §9.3) is shared logic. Silence generation feeds paragraph/chapter gaps (DESIGN §9.4) without invoking ffmpeg per gap.
+ADR-004 keeps providers thin; sizing text into engine-friendly utterances and producing standard intermediate audio (24 kHz/16-bit/mono PCM WAV — DESIGN §9.3) is shared logic. Silence generation feeds paragraph/chapter gaps (DESIGN §9.4) without invoking ffmpeg per gap. `writePcm16Wav` is consumed by the Kokoro provider (issue 19).
 
 ## Scope
 
-- `src/tts/types.ts`, `src/tts/utterance.ts`, `src/audio/wav.ts` (silence generator + duration reader), tests. No new runtime deps.
+- `src/tts/types.ts`, `src/tts/utterance.ts`, `src/audio/wav.ts`, tests. No new runtime deps.
 
 ## Detailed Requirements
 
-1. `tts/types.ts` exactly per DESIGN §10.1: `TtsUtterance = {text, index}`; `TtsProvider` with `id`, `lang`, `checkAvailability()`, optional `prepare()`, `synthesize(u, outWavPath) → {durationMs}`, optional `dispose()`. Reuse `ProviderHealth` from `core/provider.ts`.
-2. Utterance splitter `splitUtterances(paragraphs: string[], lang: 'ja'|'en') → UtterancePlan` where `UtterancePlan = Array<{text, paragraphBreakAfter: boolean}>`:
-   - limits: ja ≤ 120 chars, en ≤ 280 chars (DESIGN §10.1)
-   - sentences from issue 12 `splitSentences(paragraph, lang)`; merge consecutive sentences while total ≤ limit
-   - single sentence > limit: keep whole unless > 2× limit, then split at clause punctuation `、`/`,`/`;`/`：`/`:` nearest below the limit (search backward from limit; no clause point → hard-split at limit — log warn)
-   - `paragraphBreakAfter: true` on the last utterance of each source paragraph (drives `gapBetweenParagraphsMs` in assembly)
-   - empty paragraphs dropped; output preserves reading order.
-3. Silence WAV generator `writeSilenceWav(path, durationMs)`: RIFF/WAVE, PCM 16-bit, mono, 24000 Hz, `data` bytes = `round(24000 * durationMs / 1000) * 2` zero bytes; header fields exact (ChunkSize, Subchunk2Size, byteRate 48000, blockAlign 2). Deterministic bytes for a given duration.
-4. Duration reader `wavDurationMs(path)`: parse RIFF header (validate `RIFF`/`WAVE`/`fmt `), require PCM(1), read sampleRate/bitsPerSample/channels and `data` chunk size (scan chunks — do not assume data at fixed offset); `durationMs = dataBytes / (sampleRate * channels * bits/8) * 1000` rounded; malformed → `EarmarkError AUDIO_BAD_WAV`.
-5. Contract constants exported: `WAV_SAMPLE_RATE = 24000`, `WAV_CHANNELS = 1`, `WAV_BITS = 16` — providers/assembler import these; no magic numbers elsewhere.
-6. All pure/file-local; no ffmpeg here.
+1. `tts/types.ts` per DESIGN §10.1: `TtsUtterance = {text, index}`; `TtsProvider` with `id`, `lang`, `checkAvailability(): Promise<ProviderHealth>` (type from `core/provider.ts`, issue 14), optional `prepare()`, `synthesize(u, outWavPath) → Promise<{durationMs}>`, optional `dispose()`.
+2. Utterance splitter `splitUtterances(paragraphs: string[], lang: 'ja'|'en') → UtterancePlan`:
+   ```ts
+   type UtterancePlan = Array<{ text: string; paragraphBreakAfter: boolean }>;
+   ```
+   - **target merge limits**: ja 120 chars, en 280 chars — sentences (from `splitSentences` in `core/textseg.ts`, issue 12) are greedily merged (joined with a single space for en, no separator for ja) while the merged length stays ≤ the limit
+   - exception: a single sentence longer than the limit but ≤ 2× the limit stays whole (one utterance)
+   - a single sentence > 2× the limit is split at clause punctuation (`、` `,` `;` `：` `:`), searching backward from the limit; splitting recurses until every piece is ≤ the limit or no clause point exists, in which case the piece is hard-split at the limit; hard splits are reported via the return value's companion `{hardSplits: number}` (function returns `{plan, hardSplits}`; caller logs metadata only — never raw text)
+   - `paragraphBreakAfter: true` on exactly the last utterance of each source paragraph
+   - empty/whitespace paragraphs dropped; reading order preserved; pure function.
+3. `wav.ts` — contract constants exported and used everywhere (no magic numbers): `WAV_SAMPLE_RATE = 24000`, `WAV_CHANNELS = 1`, `WAV_BITS = 16`.
+   - `writeSilenceWav(path, durationMs)`: canonical 44-byte RIFF/WAVE PCM header + `round(24000 * durationMs / 1000) * 2` zero bytes; header fields exact (ChunkSize, Subchunk2Size, byteRate 48000, blockAlign 2); deterministic bytes for a given duration.
+   - `writePcm16Wav(path, samples: Int16Array, sampleRate: number)`: same canonical header shape with the given rate; used by providers converting engine output.
+   - `wavDurationMs(path)`: parse RIFF — validate `RIFF`/`WAVE` magics; iterate chunks advancing `8 + size + (size % 2)` (odd-size padding) with bounds checks on every read; require a `fmt ` chunk with audioFormat PCM(1) and supported layout (mono/stereo, 8/16 bits — others → error) and a `data` chunk; `durationMs = round(dataBytes / (sampleRate * channels * bits/8) * 1000)`. Malformed/truncated/non-PCM → `EarmarkError AUDIO_BAD_WAV`.
 
 ## Acceptance Criteria
 
-- [ ] Splitter tables: ja paragraph of five 40-char sentences → utterances of ≤120 with 3+2 or similar greedy packing; 130-char ja sentence stays whole; 250-char ja sentence (>2×120) splits at `、`; en behaves with 280 limit; `paragraphBreakAfter` marks exactly one utterance per paragraph.
-- [ ] Silence WAV: 500 ms file has exactly 24000 data bytes + 44-byte canonical header (byte-snapshot test); `wavDurationMs` reads it back as 500.
-- [ ] Duration reader handles a WAV with an extra `LIST` chunk before `data` (fixture) and rejects truncated files with `AUDIO_BAD_WAV`.
-- [ ] Roundtrip property: for durations 1..2000 ms random sample, write→read is within ±1 ms.
-- [ ] Constants imported by tests (guard against drift).
+- [ ] Interface contract: tests include a compiling `FakeTtsProvider implements TtsProvider` writing silence WAVs (also exported from `test/util/` for issues 24/28) — proves the public types are implementable as intended.
+- [ ] Splitter exact tables (both languages), including these fixed cases:
+   - ja paragraph = five sentences of exactly 40 chars each → utterances of 120+80 chars (3 sentences merged, then 2)
+   - ja single 130-char sentence → one utterance (≤ 2× rule)
+   - ja single 250-char sentence with a `、` at position 100 → split at the `、`, recursion terminates, pieces ≤ 120
+   - clause-free 300-char ja sentence → hard-split at 120/120/60 with `hardSplits: 1` reported
+   - en behaves with the 280 limit and space-joined merging
+   - `paragraphBreakAfter` marks exactly one utterance per input paragraph.
+- [ ] Silence WAV: 500 ms file = canonical header + exactly 24,000 data bytes (byte-snapshot); `wavDurationMs` reads back 500.
+- [ ] `writePcm16Wav` roundtrip: 1,000 samples at 24 kHz → duration ≈ 42 ms; byte-level header snapshot.
+- [ ] Duration reader matrix: extra `LIST` chunk before `data` (fixture) → ok; odd-sized chunk followed by `data` → ok (padding honored); truncated file, wrong magic, missing `fmt `, missing `data`, audioFormat 3 (float) → `AUDIO_BAD_WAV` each.
+- [ ] Roundtrip property: durations 1..2000 ms (seeded sample) write→read within ±1 ms.
+- [ ] A real-ffmpeg-generated WAV fixture (`ffmpeg -f lavfi -i anullsrc=r=24000:cl=mono -t 0.5 -c:a pcm_s16le fixture.wav`, committed ~24 KB) parses correctly — interop proof.
 
 ## Validation
 
-`vitest`; include one fixture WAV generated by real ffmpeg (`ffmpeg -f lavfi -i anullsrc=r=24000:cl=mono -t 0.5 -c:a pcm_s16le fixture.wav`, committed, ~24 KB) parsed correctly — proves interop with ffmpeg-produced headers. No manual steps.
+`vitest` as above. No manual steps.
 
 ## Dependencies
 
-02 (config types only), 12 (`splitSentences`).
+02 (config types only), 12 (`splitSentences` from `core/textseg.ts`), 14 (`ProviderHealth` from `core/provider.ts`).
 
 ## Non-goals
 
-Any engine client (17/19/20); resampling utilities (providers own their conversion, using ffmpeg where needed); Opus/AAC handling (assembler, issue 22).
+Any engine client (17/19/20); resampling (providers own conversion, via ffmpeg where needed — issues 19/20); AAC/m4a handling (issue 22).
 
 ## Design References
 

@@ -2,47 +2,62 @@
 
 ## Summary
 
-Implement `src/tts/kokoro.ts`: the English `TtsProvider` running Kokoro-82M in-process via `kokoro-js` (ONNX), with model download/cache management under earmark's cache dir, contract-WAV output, and graceful failure guidance toward the `say` fallback. Resolves known unknown U1 (onnxruntime × current Node).
+Implement `src/tts/kokoro.ts`: the English `TtsProvider` running Kokoro-82M in-process via `kokoro-js` (ONNX), loaded lazily through an injectable engine factory, with model download/cache under earmark's cache dir, contract-WAV output (resampling via ffmpeg if ever needed), and failure guidance toward the `say` fallback. Resolves known unknown U1 (onnxruntime × current Node).
 
 ## Context
 
-When `outputLanguage=en`, all narration and bodies are English; Kokoro gives far better long-form quality than macOS `say` (research/local-tts-selection.md). kokoro-js pulls `onnx-community/Kokoro-82M-v1.0-ONNX` on first use (~86–330 MB by dtype); that download must be explicit, logged, and cached deterministically.
+When `outputLanguage=en`, all narration and bodies are English; Kokoro gives far better long-form quality than macOS `say` (research/local-tts-selection.md). kokoro-js pulls `onnx-community/Kokoro-82M-v1.0-ONNX` on first use (~86–330 MB by dtype); that download must be explicit, logged, and land in earmark's own cache directory.
 
 ## Scope
 
-- `src/tts/kokoro.ts`, tests (unit with stubbed engine; opt-in real integration). Runtime dep added: `kokoro-js@^1` (exact-pin per DESIGN §13.7 since it drags onnxruntime prebuilds).
+- `src/tts/kokoro.ts`, tests (unit with stubbed engine; opt-in real integration). Runtime deps added: `kokoro-js@1.2.1` (exact pin per DESIGN §13.7 — it drags onnxruntime prebuilds) and `@huggingface/transformers` as a direct dependency at the same version range kokoro-js declares (needed to configure the cache location; see req 3).
 
 ## Detailed Requirements
 
-1. Constructor `new KokoroProvider(cfg.tts.en.kokoro, cacheDir, logger)`; `id='kokoro'`, `lang='en'`.
-2. Model cache location: `<paths.cacheDir>/kokoro/` — configure kokoro-js/transformers-js to use it (the library resolves its cache via `@huggingface/transformers` env settings; **implementation task**: pin down the exact mechanism for the installed version — `env.cacheDir` or the `cache_dir` option — verify against the pinned version's docs/source, encode in code with a comment citing the version, and add a test asserting files land under our dir, not `~/.cache/huggingface`).
-3. `prepare()`: loads the model (`KokoroTTS.from_pretrained(MODEL_ID, {dtype: cfg.dtype})`), triggering download when absent; log info before (`downloading Kokoro model (~<size est by dtype> MB, one-time)`) and after with elapsed; loaded instance retained on the provider.
-4. `checkAvailability()`: does NOT download. Cache dir contains model files for the configured dtype → `{ok:true}`; absent → `{ok:false, detail:"Kokoro model not downloaded (~N MB on first run) — run: earmark doctor --fix-kokoro? NO"}` — detail text exactly: `"Kokoro model not cached; first run will download ~<N> MB"` with `ok:false` treated by doctor as WARN not FAIL (doctor issue 27 maps provider ids to severity).
-5. `synthesize(utterance, outWavPath)`: `tts.generate(text, {voice: cfg.voice})` (API per pinned version) → returns audio (Float32 + sampling rate); convert Float32 [-1,1] → s16le with clamping; if sample rate ≠ 24000, resample is required — Kokoro outputs 24000 Hz natively; assert and hard-error `TTS_SYNTH_FAILED` if not (no resampler in-process; a mismatch means the library changed — fail loudly); write contract WAV via issue 16 header writer (extend `wav.ts` with `writePcm16Wav(path, int16Array, sampleRate)`); return duration from sample count. Sequential; utterance timeout 120 s via `Promise.race` → `TTS_SYNTH_FAILED` (no retry — in-process failures are deterministic).
-6. Failure of module load (onnxruntime ABI mismatch with the running Node — U1): catch at `prepare()`/first import, throw `TTS_UNAVAILABLE` with remediation `"kokoro-js failed to load on this Node version — set tts.en.provider=say as a fallback (see docs/SETUP)"`; the error must surface identically through doctor.
-7. Voice: config `voice` passed through (default `af_heart`); invalid voice → library error mapped to `TTS_SYNTH_FAILED` listing available voices if the API exposes them (best effort).
-8. Unit-test seam: engine factory injected so tests stub `from_pretrained`/`generate` with a deterministic Float32 sine generator (duration = chars × 12 ms) — no download in CI.
+1. Constructor:
+   ```ts
+   new KokoroProvider(cfg.tts.en.kokoro, deps: {
+     cacheDir: string;                 // <paths.cacheDir>/kokoro
+     ffmpegPath: string;               // for the (defensive) resample path
+     logger: Logger;
+     engineFactory?: () => Promise<KokoroEngine>;   // default: lazy dynamic import('kokoro-js') + from_pretrained
+   })
+   ```
+   `id='kokoro'`, `lang='en'`. `kokoro-js` must NOT be imported at module top level — only inside the default engine factory (so import/ABI failures are catchable, req 6).
+2. Default engine factory: `const { KokoroTTS } = await import('kokoro-js')`; `KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: cfg.dtype })`.
+3. Cache redirection: before the dynamic import's first use, set `env.cacheDir = deps.cacheDir` via `import { env } from '@huggingface/transformers'` (kokoro-js resolves models through transformers.js, which honors `env.cacheDir`). Dependency-version note for implementers: keep the direct `@huggingface/transformers` range identical to the one in `kokoro-js@1.2.1`'s package.json so npm dedupes to a single instance (verify with `npm ls @huggingface/transformers`; a duplicated instance would leave the setting ineffective — treat as install-time failure).
+4. `prepare()`: creates the engine via the factory (triggering download when absent); `logger.info` before (`downloading Kokoro model (~<size-by-dtype> MB, one-time)` — only when cache sentinel absent) and after with elapsed ms; on success writes sentinel file `<cacheDir>/.ready-<dtype>`; retains the engine instance.
+5. `checkAvailability()` (no download, no import): sentinel `<cacheDir>/.ready-<dtype>` exists AND cache dir non-empty → `{ok:true, detail:"kokoro model cached (<dtype>)"}`; else `{ok:false, detail:"Kokoro model not cached; first run will download ~<N> MB"}` — doctor (issue 27) maps this provider's `ok:false` to WARN, not FAIL. (Size by dtype: fp32 ≈ 330, fp16 ≈ 170, q8 ≈ 90, q4 ≈ 50 — constants documented in code.)
+6. Load failure (U1 — onnxruntime ABI mismatch with the running Node): any throw from the factory (import or `from_pretrained`) is caught in `prepare()` and rethrown as `EarmarkError TTS_UNAVAILABLE` with remediation `"kokoro-js failed to load on this Node version — set tts.en.provider=say as a fallback (see docs/SETUP.md)"`. Doctor does NOT attempt a load probe (issue 27 reports cache state only); this error surfaces at run time.
+7. `synthesize(utterance, outWavPath)`: `engine.generate(text, {voice: cfg.voice})` (API per pinned version) → audio as Float32Array + sampling rate:
+   - Float32 → Int16 conversion formula (exact): `s = Math.max(-32768, Math.min(32767, Math.round(f * 32767)))`
+   - sample rate 24000 → write directly via `writePcm16Wav` (issue 16); any other rate → write a temp WAV at the native rate then resample with `execFile(ffmpegPath, ['-y','-hide_banner','-loglevel','error','-i', tmp, '-ar','24000','-ac','1','-c:a','pcm_s16le', outWavPath])` (DESIGN §9.3: providers deliver the contract format)
+   - return duration from final sample count (or `wavDurationMs` after resample)
+   - utterance timeout 120 s via `Promise.race` → `TTS_SYNTH_FAILED`; no retry (in-process failures are deterministic)
+   - invalid voice → library error mapped to `TTS_SYNTH_FAILED`, listing available voices if the API exposes them (best effort).
+8. Sequential synthesis only; `dispose()` releases the engine reference (no explicit teardown API assumed).
 
 ## Acceptance Criteria
 
-- [ ] Unit (stubbed): float→s16 conversion correctness (incl. clamp at ±1.0 and dithering-free rounding — snapshot 20 samples); WAV written at 24 kHz mono 16-bit; duration math from sample count exact; timeout path yields `TTS_SYNTH_FAILED`.
-- [ ] `checkAvailability` cache-present/absent detection tested with fixture files in temp cacheDir.
-- [ ] Load-failure path (stub throws on import/prepare) → `TTS_UNAVAILABLE` with the `say` remediation text.
-- [ ] Real integration test exists, gated by `EARMARK_TEST_KOKORO=1` (downloads model, synthesizes "Good morning from earmark.", asserts duration > 500 ms and RMS > 0) — excluded from CI, run manually.
-- [ ] Cache-dir redirection verified (no writes outside `<cacheDir>/kokoro/` in the stubbed download test; real test asserts the actual location).
+- [ ] Unit (stubbed factory returning a deterministic sine generator, duration = chars × 12 ms): f32→s16 conversion snapshot incl. clamp at ±1.0 and the exact rounding formula (20-sample table); WAV written at 24 kHz mono 16-bit; duration math exact; timeout path → `TTS_SYNTH_FAILED`.
+- [ ] Non-24 kHz stub output (e.g. 22050) triggers the ffmpeg resample argv (execFile spy asserts exact args) and yields a 24 kHz contract WAV.
+- [ ] `prepare()` logging asserted with a stubbed logger: download-announce line only when sentinel absent; elapsed line always; sentinel written on success.
+- [ ] `checkAvailability` matrix with fixture cache dirs: sentinel present+non-empty → ok; missing sentinel → the exact WARN detail string; never triggers the engine factory (spy).
+- [ ] Factory throw in `prepare()` → `TTS_UNAVAILABLE` with the `say` remediation text; module import of `src/tts/kokoro.ts` itself never imports kokoro-js (verified via `--experimental-import-meta-resolve`-free static check or jest-style module spy — a simple test asserting the module loads with kokoro-js absent from a temp `node_modules` is acceptable).
+- [ ] Real integration test gated by `EARMARK_TEST_KOKORO=1` (downloads model, synthesizes "Good morning from earmark.", asserts duration > 500 ms and non-zero RMS, asserts model files under `deps.cacheDir` and NOT under `~/.cache/huggingface`) — excluded from CI.
 
 ## Validation
 
-CI: stubbed unit suite. Manual (dev Mac): `EARMARK_TEST_KOKORO=1 npx vitest run -t kokoro-real`; listen to the produced WAV once; attach transcript, resolved cache path, and load-success-on-Node-<version> note (U1 evidence — if it FAILS on the dev Node version, stop and report: the owner decides whether `say` becomes the default; do not change defaults unilaterally).
+CI: stubbed unit suite. Manual (dev Mac): `EARMARK_TEST_KOKORO=1 npx vitest run -t kokoro-real`; listen to the produced WAV once; attach transcript, resolved cache path, and a load-success-on-Node-`$(node --version)` note (U1 evidence). If loading FAILS on the dev Node version: stop, report to the owner with the error (the owner decides whether `say` becomes the en default) — do not change defaults unilaterally.
 
 ## Dependencies
 
-16.
+16 (`writePcm16Wav`, wav contract, provider interface), 02 (config), 04 (logger).
 
 ## Non-goals
 
-Japanese synthesis (Kokoro's ja support is not used in v1 — VOICEVOX owns ja); streaming synthesis; GPU/webgpu tuning; changing default en provider (owner decision if U1 fails).
+Japanese via Kokoro (VOICEVOX owns ja); streaming synthesis; GPU/webgpu tuning; doctor-side load probing (cache check only, issue 27); changing the default en provider.
 
 ## Design References
 
-DESIGN §10.4, §9.3, §12.2; research/local-tts-selection.md; ISSUE_PLAN U1; ADR-001 (local model download allowance), ADR-004.
+DESIGN §10.4, §9.3, §12.1–12.2; research/local-tts-selection.md; ISSUE_PLAN U1; ADR-001 (local model download allowance), ADR-004.

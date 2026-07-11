@@ -22,10 +22,10 @@ The Shortcut is the user-built half of the iPhone capture channel (ADR-005). It 
       - **Dictionary** action with keys: `v` → Number `1`; `url` → `Repeat Item`; `sharedAt` → **Format Date** of Current Date, format ISO 8601.
       - **Save File** (Files action): service iCloud Drive; destination path `earmark/inbox`; **Ask Where to Save: Off**; **Overwrite: Off**; Subpath/filename: `Current Date` formatted `yyyyMMdd-HHmmss` + `-` + a 4-char random component — document the Shortcuts technique: **Format Date** custom `yyyyMMdd-HHmmss` into a variable, plus **Random Number** between 1000–9999 as the suffix, filename extension `.json`.
    4. Note: passing a Dictionary to Save File stores it as JSON text — state this explicitly and instruct verification of the produced file's content via the Files app (long-press → Quick Look).
-3. Explicitly document the resulting file contract with an example body (copy from DESIGN §6.1) and the constraint that `title` is optional and omitted by this recipe (v1 keeps the recipe minimal; a title-capturing variant is listed as an optional appendix using the **Get Name** action on Safari web page shares, marked "may not work in all share contexts").
+3. Reproduce the **full DESIGN §6.1 inbox contract** in the doc, not just an example body: UTF-8 JSON, `v: 1`, required `url`, optional `title` ≤ 500 chars, ≤ 64 KiB file size, `.json` extension (`.txt`-with-URL fallback), filename is informative-only (earmark never trusts or reuses it), invalid files are moved to `inbox/rejected/` with the reason logged. State that `title` is omitted by this recipe (v1 minimal; a title-capturing variant is an optional appendix using **Get Name** on Safari shares, marked "may not work in all share contexts").
 4. Testing section: share any article from Safari → run the shortcut → within Files confirm the JSON appears under `earmark/inbox` → on the Mac run `earmark ingest` → confirm `imported 1` and the file moved to `inbox/processed/`.
 5. Troubleshooting table: file never appears on Mac (iCloud sync pending → Files app pull-to-refresh, check same Apple ID); `rejected/` contains the file (open it, compare against the contract; most common: shared a non-URL); shortcut asks where to save every time (Ask Where to Save left On); duplicate saves (expected: earmark dedupes by URL); morning digest missed a just-shared URL (sync latency — rolls over to tomorrow, ADR-005 consequence).
-6. Keep terminology aligned with the config: if the user changed `paths.inboxDir`, the Files destination must match; show how to print it (`earmark config get paths` + `earmark config path`).
+6. Keep terminology aligned with the config: if the user changed `paths.inboxDir`, the Files destination must match — and iPhone capture only works when that folder is visible in iCloud Drive/Files on iOS. A non-iCloud local path keeps CLI capture working but this Shortcut cannot target it; say so explicitly. Show how to print the active path (`earmark config get paths.inboxDir` + `earmark config path`).
 7. Add a link to this doc from `docs/DESIGN.md` §6.1? No — DESIGN stays stable; instead issue 30's README/SETUP links here (note this dependency for issue 30; no DESIGN edit in this issue).
 
 ## Acceptance Criteria
@@ -37,7 +37,7 @@ The Shortcut is the user-built half of the iPhone capture channel (ADR-005). It 
 
 ## Validation
 
-Manual, on a real iPhone: build the Shortcut following only the written steps; share one article; run `earmark ingest` on the Mac; paste the ingest transcript and the produced JSON (URL redacted if desired) into the PR as evidence. This validation requires issue 08 merged and a real iCloud account (wave-1 gate).
+Manual, on a real iPhone: build the Shortcut following only the written steps; share one article; run `earmark ingest --json` on the Mac and verify the machine-readable report shows `imported` length 1 (the doc's testing section references this exact check); paste the transcript and the produced JSON file body (URL redacted if desired) into the PR as evidence. Requires issue 08 merged and a real iCloud account (wave-1 gate).
 
 ## Dependencies
 

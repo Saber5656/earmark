@@ -27,20 +27,21 @@ This produces the complete text of the morning episode: opening with date + rund
    - `script.closingRemaining` = `キューには残り{count}本の記事があります。` (emitted only when > 0)
    - `script.signOff` = `良い一日を。` / `Have a great day.`
    - en equivalents: natural English, e.g. opening `This is your earmark daily digest for {date}. Today we have {count} article(s).` — singular/plural handled by a minimal `plural(n, one, many)` helper for en; ja ignores plurality.
-   - Date rendering: `Intl.DateTimeFormat` — ja `2026年7月11日、金曜日` (era-free, weekday long); en `Friday, July 11, 2026`. Input is the `YYYY-MM-DD` string; construct the date at **local** midnight (date-only semantic; no timezone math beyond that).
+   - Date rendering: `Intl.DateTimeFormat` — ja `2026年7月11日、土曜日` (era-free, weekday long); en `Saturday, July 11, 2026` (2026-07-11 is a Saturday). Input is the `YYYY-MM-DD` string; construct the date at **local** midnight (date-only semantic; no timezone math beyond that).
 3. `VerbatimScriptGenerator.generate` structure (DESIGN §9.2):
    - chapters[0] Opening: one narration segment: opening sentence + (articles ≥ 2 ? rundown intro + items : nothing)
    - one chapter per article, `title` = article title, `articleId` set: first segment narration `articleIntro`, then one `body` segment **per paragraph** (preserving paragraph boundaries for gap insertion downstream — do NOT merge paragraphs)
    - last chapter Closing: narration segments in order: closingMain; closingFailures (only when `failedThisRun.length > 0`, count = its length); closingPermanent (only when non-empty; titles joined `、` / `, `); closingRemaining (only when > 0); signOff.
-   - all segments `lang` = input `lang`; all narration text passes `stripControl` defensively.
+   - all segments `lang` = input `lang`; all narration text passes `stripControl` (issue 04 `core/text.ts` — ANSI/C0/C1/zero-width/bidi) defensively.
 4. Edge behaviors: `articles.length === 1` → opening says 1本/1 article, no rundown; article title containing `『』` quotes → keep as-is (no escaping; TTS reads them fine); zero articles is a **caller error** (generator throws — orchestrator never calls it with 0, per DESIGN §11.1).
 5. Purity: no clock (date passed in), no config (lang passed in), deterministic output.
 
 ## Acceptance Criteria
 
-- [ ] Golden snapshots (committed as readable `.txt` renderings, segment-per-line with kind markers) for: ja 3-articles happy path; ja 1-article; ja with 2 failures + 1 permanent + 4 remaining; en 2-articles happy path; en with failures. Reviewer reads the ja goldens for naturalness sign-off.
+- [ ] Golden snapshots (committed as readable `.txt` renderings, segment-per-line with kind markers) for: ja 3-articles happy path; ja 1-article; ja with 2 failures + 1 permanent + 4 remaining; en 2-articles happy path; en 1-article (proves the singular `1 article` form); en with failures. Reviewer reads the ja goldens for naturalness sign-off.
 - [ ] Chapter count = articles + 2; every article chapter's segment count = 1 + paragraphs.length; body paragraphs byte-identical to input.
-- [ ] Date rendering exact for 2026-07-11 in both languages (fixed test date).
+- [ ] `articles.length === 0` → generator throws (caller-error contract).
+- [ ] Date rendering exact for 2026-07-11 → `2026年7月11日、土曜日` / `Saturday, July 11, 2026`.
 - [ ] Determinism: two calls deep-equal.
 - [ ] No import from `core/db`, `core/config`, or any feature module besides `core/i18n` (lint layering + explicit test).
 

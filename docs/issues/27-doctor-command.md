@@ -14,7 +14,7 @@ VOICEVOX and Ollama are not preinstalled on user machines (nor on the dev Mac to
 
 ## Detailed Requirements
 
-1. Model: `DoctorCheck = { id, title, run(ctx) → {status: 'pass'|'warn'|'fail', detail, remediation?} }`; ctx carries cfg, logger, exec/http/fs seams. Checks run sequentially, each wrapped so a thrown error becomes `fail` with the message (doctor never crashes).
+1. Model: `DoctorCheck = { id, title, run(ctx) → {status: 'pass'|'warn'|'fail', detail, remediation?} }`; ctx carries cfg, logger, exec/http/fs seams. Checks run sequentially, each wrapped so a thrown error becomes `fail` with the message (doctor never crashes). The doctor command registers with `lazyConfig: true` (issue 04): when config loading failed, `config-valid` reports FAIL with the zod detail, config-dependent checks render as `skipped (config invalid)`, and config-independent checks (node-version, ffmpeg presence via default path) still run.
 2. Check list (ids fixed; conditional checks noted):
    | id | severity on problem | logic |
    |---|---|---|
@@ -25,22 +25,25 @@ VOICEVOX and Ollama are not preinstalled on user machines (nor on the dev Mac to
    | `output-dir` | fail | resolvedOutputDir creatable+writable |
    | `inbox-dir` | warn | resolvedInboxDir exists (missing → remediation: run `earmark ingest` once / check iCloud Drive; custom non-iCloud path missing → same) |
    | `db` | fail | openDb succeeds; schema version current; detail row counts |
-   | `tts-ja` | fail (only when `outputLanguage==='ja'`) | VOICEVOX `checkAvailability`; if unreachable AND `autoStart` → engine discovery (issue 18 exported `discoverEngineBinary`) result: found → pass with detail `engine down, autostart ready: <path>`; neither → fail with install remediation |
-   | `tts-ja-speaker` | warn (when tts-ja passed via live engine) | configured speaker id present in `/speakers` (issue 17 `listSpeakers`); mismatch → warn listing 3 nearest ids (U8) |
-   | `tts-en` | fail when `outputLanguage==='en'`, warn otherwise-skip | kokoro: cache-present check (absent → **warn** with size note per issue 19); say: availability check; load-failure (U1) → fail with `say` fallback remediation |
-   | `translation` | warn | Ollama `checkAvailability` (unreachable/model-missing → warn: translation only needed for cross-language articles; remediation strings from issue 15 verbatim) |
+   | `tts-ja` | fail (active only when `outputLanguage==='ja'`; else skipped-pass) | VOICEVOX `checkAvailability`; if unreachable AND `autoStart` → `discoverEngineBinary` (issue 18 export, no spawn): found → pass with detail `engine down, autostart ready: <path>`; neither → fail with install remediation |
+   | `tts-ja-speaker` | warn (only when tts-ja passed via live engine) | configured speaker id present in `/speakers` (issue 17 `listSpeakers`); mismatch → warn listing 3 nearest ids (U8) |
+   | `tts-en` | fail when `outputLanguage==='en'` and provider check fails hard; kokoro cache-absent is always **warn** | kokoro: cache-present check only (issue 19 `checkAvailability` — no load probe, no download; runtime load failures surface during `run` with the `say` remediation); say: availability check per issue 20 |
+   | `provider-base-urls` | warn | `validateProviderUrls(cfg)` (issue 02): one warn per non-loopback provider base URL, detail = the §13.6 wording `article text will leave this machine: <field> = <url>` |
+   | `translation` | warn | Ollama `checkAvailability` (unreachable/model-missing/wrong-shape → warn: translation only needed for cross-language articles; remediation strings from issue 15 verbatim) |
    | `schedule` | warn | issue 26 status: not installed → warn `run earmark schedule install`; drift → warn with details; installed+clean → pass |
    | `disk-space` | warn | ≥ 1 GB free on cacheDir volume (`statfs` via `fs.statfs`) |
    | `lock` | warn | stale lock file present → warn `stale lock from pid <p> — will be reclaimed next run` |
 3. Ordering: environment (node→config→dirs→ffmpeg→db) then providers then schedule/disk/lock — remediation earlier items first.
 4. Output (human): aligned `✓/⚠/✗ <title>: <detail>` lines, remediation indented on problem lines; summary footer `X passed, Y warnings, Z failed`; `--json`: array of results + summary. Exit code: any fail → 3; else 0 (warnings don't fail — they'd block first-run UX).
-5. Conditional logic: checks not applicable to the active config (e.g. `tts-en` when ja-only) run as `pass` with detail `skipped (not configured)` — visible, not hidden (users toggling `outputLanguage` see what would be needed? NO — skipped checks that would apply to the OTHER language render as informational `skipped`; keep output honest and stable).
+5. Conditional logic (uniform rule): a check not applicable to the active config (e.g. `tts-en` when `outputLanguage==='ja'`, `tts-ja` when `'en'`) always renders `pass` with detail `skipped (not configured)`; WARN/FAIL are reserved for the active configuration's checks. Inactive checks stay visible so the output shape is stable.
 6. Every remediation string matches the corresponding provider/setup doc wording (issues 15/17/18/19/20/26; SETUP doc issue 30 will quote doctor output — keep strings stable).
 
 ## Acceptance Criteria
 
 - [ ] Fake-injected matrix: all-green env → exit 0 with 0 warnings; each check individually forced to its problem state produces the specified status/remediation and correct exit code.
 - [ ] Conditional matrix: `outputLanguage=ja` → tts-en shows skipped-pass, tts-ja active; `en` → inverse; translation always evaluated as warn-severity.
+- [ ] Invalid-config path: doctor runs (lazyConfig), `config-valid` FAILs with zod detail, config-dependent checks render `skipped (config invalid)`, exit 3.
+- [ ] `provider-base-urls`: non-loopback Ollama URL fixture → WARN with the §13.6 wording; loopback-only config → PASS.
 - [ ] kokoro-cache-missing is WARN not FAIL; VOICEVOX down with discoverable engine is PASS (autostart-ready detail).
 - [ ] Human output snapshot (fixed fakes) and `--json` schema stable.
 - [ ] A check that throws (injected) renders fail without aborting subsequent checks.

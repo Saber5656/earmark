@@ -2,44 +2,58 @@
 
 ## Summary
 
-Make the package publishable and prove it: `npm pack` content audit, packed-tarball smoke test on a clean prefix, exact-pinning audit of native/prebuilt deps, LICENSE file (after owner sign-off), CHANGELOG, repository metadata, and the documented manual publish procedure including the repository-policy history/PII scan. **Publishing itself is not part of this issue.**
+Make the package publishable and prove it: `npm pack` content audit against an exact allowlist, packed-tarball smoke test on a clean prefix in a sandboxed environment, exact-pinning audit of native/prebuilt deps (incl. transitive `onnxruntime-node`), LICENSE file (only after owner sign-off), CHANGELOG, repository metadata, and the documented manual publish procedure including the repository-policy history/PII scan. **Publishing itself is not part of this issue.**
 
 ## Context
 
-v1 ends at "ready to publish" (DESIGN §18): the owner performs `npm publish` and the repository-public switch manually after this issue's checklist passes. The repo policy additionally requires scanning commit history for personal data/secrets before any public release.
+v1 ends at "ready to publish" (DESIGN §18): the owner performs `npm publish` manually after this issue's checklist passes. The GitHub repository is already public; the release-hygiene gates here protect the npm artifact and the tagged release. Repo policy requires a commit-history personal-data/secret scan before publication artifacts go out.
 
 ## Scope
 
-- `package.json` final fields, `LICENSE`, `CHANGELOG.md`, `docs/RELEASING.md` (the manual procedure), CI publish-dry-run job (optional, no tokens), smoke script.
+- `package.json` final fields, `LICENSE`, `CHANGELOG.md`, `docs/RELEASING.md`, CI smoke-pack job, `scripts/smoke-pack.sh`.
 
 ## Detailed Requirements
 
-1. `package.json` finalization: `description` (English, matches README tagline translation), `keywords`, `repository`/`bugs`/`homepage` → `github.com/Saber5656/earmark`, `author`, `license: MIT`, `files: ["dist","README.md","LICENSE","docs/SETUP.md","docs/SHORTCUT.md"]` (SETUP/SHORTCUT ship so `npm docs`-less users get them — confirm size impact < 100 KB), `engines.node: ">=22"`, `publishConfig: { access: "public", provenance: true }` (provenance only if publishing via CI later — include commented note), bin executable bit via build (`chmod` in build script or `tsc` + explicit chmod step; verify `npx` execution works from tarball).
-2. **License sign-off gate**: confirm MIT with the owner (recorded decision required — if the owner has not confirmed by implementation time, STOP and ask; do not add the LICENSE file on assumption). After sign-off: standard MIT text, copyright `2026 Saber5656`.
-3. Dependency pinning audit: `better-sqlite3` and `kokoro-js` pinned exact (no `^`) with a comment-doc in `docs/RELEASING.md` on the upgrade procedure; all other deps `^`-ranged; `npm ci && npm test` from a fresh clone verified; `npm audit --omit=dev` clean at high/critical.
-4. Smoke test script `scripts/smoke-pack.sh`: `npm run build && npm pack` → install the tarball into a temp prefix (`npm install -g --prefix <tmp> ./earmark-0.1.0.tgz`) → run `<tmp>/bin/earmark --version`, `earmark config path`, `earmark doctor --json` (accept exit 3; assert JSON parses) with sandbox env vars → uninstall. Wire as CI job step (macos).
-5. `npm pack --dry-run` content audit checklist in `docs/RELEASING.md`: MUST contain only dist/docs listed; MUST NOT contain: `test/`, fixtures, `.github/`, `docs/issues|decisions|research`, `scripts/measure-*`, any `*.wav/*.m4a`, editor/config files. Verified by the smoke script (grep the pack file list against an allowlist).
-6. `CHANGELOG.md`: Keep-a-Changelog format, `0.1.0 - Unreleased` section summarizing v1 features (one line per DESIGN §1.2 row).
+1. `package.json` finalization (exact values — do not invent):
+   - `description`: `Turn read-later articles into a daily local TTS podcast digest (macOS)`
+   - `keywords`: `["tts","podcast","read-later","text-to-speech","voicevox","kokoro","cli","macos"]`
+   - `repository`: `{"type":"git","url":"git+https://github.com/Saber5656/earmark.git"}`; `bugs`: `https://github.com/Saber5656/earmark/issues`; `homepage`: `https://github.com/Saber5656/earmark#readme`
+   - `author`: `Saber5656` (owner may substitute a display name at sign-off; see OWNER gate below)
+   - `license`: `MIT` (pending gate below); `engines.node: ">=22"`; `files: ["dist","README.md","LICENSE"]` (DESIGN §18 — docs stay on GitHub)
+   - `publishConfig`: `{"access":"public"}` only — **no `provenance`** (requires CI/OIDC publishing; v1 is manual; future CI provenance is a RELEASING.md note)
+   - bin executable: build step ensures `dist/cli/index.js` keeps its shebang and the pack/install path yields an executable `earmark` (verified by the smoke script).
+2. **License sign-off gate**: MIT and the copyright line (`Copyright (c) 2026 Saber5656`) require recorded owner confirmation (issue link/comment). If not confirmed by implementation time: STOP and ask; do not add LICENSE or publish metadata on assumption.
+3. Dependency pinning audit:
+   - `better-sqlite3` and `kokoro-js` pinned exact (no `^`)
+   - transitive `onnxruntime-node` (via kokoro-js) pinned via `package.json` `overrides` to the exact version kokoro-js@1.2.1 resolves to; evidence: `npm ls onnxruntime-node better-sqlite3 kokoro-js` output in `docs/RELEASING.md`
+   - all other deps `^`-ranged; fresh-clone `npm ci && npm run build && npm test` green (CI proves); `npm audit --omit=dev --audit-level=high` clean.
+4. Lifecycle-script gate: `package.json` must contain no `preinstall`/`install`/`postinstall`/`prepare`-with-side-effects scripts of our own (`prepare` for build-on-git-install is also disallowed in v1 — packing is explicit); an automated check in the smoke script greps for them. Any new/modified GitHub Actions in this PR pinned to full commit SHAs (DESIGN §13.7).
+5. `scripts/smoke-pack.sh` (runs locally and as a CI job on macos):
+   - `npm run build && npm pack` → capture tarball
+   - allowlist audit: `tar -tzf` file list must equal exactly: `package/package.json`, `package/README.md`, `package/LICENSE`, and `package/dist/**` (nothing else — npm always includes package.json/README/LICENSE regardless of `files`; the assertion is an exact-set comparison after globbing dist)
+   - sandboxed install: `npm install -g --prefix "$TMP/prefix" ./earmark-*.tgz`; then run with sandbox env: `EARMARK_CONFIG_DIR="$TMP/cfg"` and a pre-written config setting `paths.dataDir/stateDir/cacheDir/icloudRoot/inboxDir/outputDir` all under `$TMP` — commands: `earmark --version` (exact match), `earmark config path`, `earmark doctor --json` (exit 3 acceptable; assert stdout parses as JSON and no file outside `$TMP`/the prefix was created — spot-check `~/.config/earmark` untouched)
+   - uninstall + cleanup; lifecycle-script grep (req 4).
+6. `CHANGELOG.md`: Keep-a-Changelog format, `## [0.1.0] - Unreleased` summarizing v1 features (one line per DESIGN §1.2 row).
 7. `docs/RELEASING.md` — the manual gate procedure (owner executes):
    1. all ISSUE_PLAN §6 validation items green (links)
-   2. history/PII scan: run `gitleaks detect --source .` (or equivalent) AND manual `git log -p | grep`-based checklist for personal paths/emails per repo policy; **repo is currently private — the public switch happens only after this scan passes**; any hit → follow repo policy (consider fresh-repo migration)
-   3. version bump conventions (semver; 0.x caveat), `git tag v0.1.0`
-   4. `npm publish` (2FA note), post-publish smoke `npm install -g earmark` on a second machine/account-less check
-   5. GitHub release notes from CHANGELOG.
-8. CI: add the smoke-pack job; no publish automation, no tokens stored (v1 policy: manual publish only — ADR-001 zero-secret extends to CI).
+   2. history/PII scan of the repository: `gitleaks detect --source .` (or equivalent) AND a manual checklist (`git log -p` grep for home paths, emails, tokens) per repo policy; any hit → follow policy (fresh-repo migration consideration) **before tagging or publishing**
+   3. version conventions (semver, 0.x caveat), `git tag v0.1.0`
+   4. `npm publish` (2FA note) + post-publish smoke (`npm install -g earmark` on a clean prefix)
+   5. GitHub release notes from CHANGELOG
+   6. future work note: CI-based publishing with `--provenance` (v2; requires OIDC setup — explains why v1 omits it).
 
 ## Acceptance Criteria
 
-- [ ] `scripts/smoke-pack.sh` passes locally and in CI: tarball installs into a clean prefix and `earmark --version` + `config path` + `doctor --json` behave; pack file list matches the allowlist exactly.
-- [ ] LICENSE present **with recorded owner sign-off** (PR links the confirmation) — or the issue is blocked and says so.
-- [ ] `npm audit --omit=dev --audit-level=high` clean; exact-pin audit documented.
-- [ ] CHANGELOG + RELEASING complete; RELEASING includes the history-scan gate wording and the private→public ordering rule.
-- [ ] Fresh-clone `npm ci && npm run build && npm test` green (CI proves).
-- [ ] No `npm publish` executed; no tokens/credentials introduced anywhere.
+- [ ] `scripts/smoke-pack.sh` passes locally and in CI: exact-set tarball allowlist; sandboxed global install runs the three commands; nothing written outside the sandbox; lifecycle-script grep clean.
+- [ ] LICENSE present **with linked owner sign-off** for MIT + copyright holder — or the issue is explicitly blocked on that and says so.
+- [ ] `npm ls` pinning evidence for `better-sqlite3`, `kokoro-js`, `onnxruntime-node` (overrides effective) recorded in RELEASING.md; `npm audit --omit=dev --audit-level=high` clean.
+- [ ] `package.json` fields byte-match req 1 (test or reviewer diff against the literal values above).
+- [ ] CHANGELOG + RELEASING complete; RELEASING includes the history-scan gate and the provenance deferral note.
+- [ ] No `npm publish` executed; no tokens/credentials introduced anywhere (CI has no registry secrets).
 
 ## Validation
 
-CI smoke-pack job link + local transcript in PR. Reviewer re-runs the pack-list audit. Owner confirms license + reads RELEASING as the final v1 sign-off artifact.
+CI smoke-pack job link + local transcript in PR. Reviewer re-runs the tarball allowlist audit. Owner confirms license/author values and accepts RELEASING.md as the final v1 sign-off artifact.
 
 ## Dependencies
 
@@ -47,8 +61,8 @@ CI smoke-pack job link + local transcript in PR. Reviewer re-runs the pack-list 
 
 ## Non-goals
 
-Actual publishing / repo-public switch (owner-manual per RELEASING); Homebrew formula (v2); CI-automated releases/provenance pipeline (v2); version 1.0 semantics.
+Actual publishing (owner-manual per RELEASING); Homebrew formula (v2); CI-automated releases/provenance (v2); shipping SETUP/SHORTCUT docs inside the npm tarball (GitHub is their home — DESIGN §18); version 1.0 semantics.
 
 ## Design References
 
-DESIGN §18, §13.7, §2.3; ADR-001 (zero-secret incl. CI); repository policy: pre-publication history scan (user global rules — mirrored into RELEASING.md).
+DESIGN §18, §13.7, §2.3; ADR-001 (zero-secret incl. CI); repository policy: pre-publication history scan (mirrored into RELEASING.md).

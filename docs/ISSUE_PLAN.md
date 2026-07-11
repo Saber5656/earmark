@@ -7,7 +7,7 @@
 
 v1 is complete when **all 31 issues below are implemented and their Validation sections pass**, producing this end state:
 
-> On a macOS machine, a user can `npm install -g earmark` (or run from a checkout), run `earmark doctor` and follow its remediation hints (install ffmpeg, VOICEVOX, Ollama + model, iOS Shortcut), capture articles via `earmark add <url>` and the iPhone Share Sheet, and from then on receive every morning at 06:00 a single `earmark-YYYY-MM-DD.m4a` in their iCloud Drive `earmark/digests/` folder — containing an opening, one chapter per article (oldest-first, max 10, translated to the configured `ja`/`en` output language, read in full by local TTS), and a closing that reports failures and remaining queue — with queue management (`list/remove/requeue`), run history (`log`), macOS notifications, basic tests green in CI, and setup documentation.
+> On a macOS machine, a user can `npm install -g earmark` (or run from a checkout), run `earmark doctor` and follow its remediation hints (install ffmpeg, VOICEVOX, Ollama + model, iOS Shortcut), capture articles via `earmark add <url>` and the iPhone Share Sheet, and from then on receive each morning at 06:00 (on wake, if the Mac was asleep; a powered-off/logged-out Mac skips that morning) a single `earmark-YYYY-MM-DD.m4a` in their iCloud Drive `earmark/digests/` folder — containing an opening, one chapter per article (oldest-first, max 10, translated to the configured `ja`/`en` output language, read in full by local TTS), and a closing that reports failures and remaining queue — with queue management (`list/remove/requeue`), run history (`log`), macOS notifications, basic tests green in CI, and setup documentation.
 
 Anything not covered by an issue below is a non-goal for v1 (DESIGN §1.4) or a known unknown (§8 below).
 
@@ -55,33 +55,33 @@ Anything not covered by an issue below is a non-goal for v1 (DESIGN §1.4) or a 
 |---|---|---|
 | 01 | — | |
 | 02 | 01 | |
-| 03 | 01 | |
+| 03 | 01, 02 | `EarmarkError`, config types |
 | 04 | 01, 02 | logger + config load at startup |
 | 05 | 01 | pure library |
 | 06 | 03, 04, 05 | |
 | 07 | 03, 04 | |
 | 08 | 02, 03, 04, 05 | inbox paths from config |
 | 09 | 08 | documents the frozen contract |
-| 10 | 02, 05 | private-network policy shares IP-range helpers with 05 |
-| 11 | 01 | input is an HTML string; independent of fetcher |
-| 12 | 11 | consumes extractor output contract |
+| 10 | 02, 04, 05 | logger contract from 04; IP classifiers from 05 |
+| 11 | 01, 04 | `stripControl` from 04; input is an HTML string, independent of fetcher |
+| 12 | 04, 11 | sanitizer from 04; consumes extractor output contract + committed fixture |
 | 13 | 12 | detects on speakable text |
-| 14 | 02, 13 | |
-| 15 | 14 | implements interface from 14 |
-| 16 | 02 | utterance splitter, silence WAV generator |
+| 14 | 02, 12, 13 | chunker splits long paragraphs via `splitSentences` (12) |
+| 15 | 02, 04, 14 | implements interface from 14; codec from 14 |
+| 16 | 02, 12, 14 | `splitSentences` (core/textseg, 12), `ProviderHealth` (core/provider, 14) |
 | 17 | 16 | |
-| 18 | 02, 17 | lifecycle wraps the provider's health check |
-| 19 | 16 | |
-| 20 | 16 | needs ffmpeg path from config for AIFF→WAV |
+| 18 | 02, 04, 17 | wires provider prepare/dispose; exports `discoverEngineBinary` for 27 |
+| 19 | 02, 04, 16 | `writePcm16Wav` from 16 |
+| 20 | 02, 16 | needs ffmpeg path from config for AIFF→WAV |
 | 21 | 02, 12, 14 | consumes PreparedArticle model |
 | 22 | 02, 16, 21 | chapter plan model from 21, WAV contract from 16 |
 | 23 | 03 | |
-| 24 | 08, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23 | 19/20 soft (en path exercised when configured) |
+| 24 | 04, 08, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23 | en path unit-tested with a fake provider; real en providers land in 19/20 and e2e scenario D |
 | 25 | 24 | renders run summary produced by 24 |
 | 26 | 04, 24 | plist invokes `run --trigger launchd` |
 | 27 | 15, 18, 19, 20, 26 | aggregates every `checkAvailability` + env checks |
-| 28 | 24 | mock servers are new test utilities |
-| 29 | 05, 08, 10, 12 | table-driven tests over merged boundary modules |
+| 28 | 20, 24 | mocks from 15/17; scenario D uses the `say` provider (20) |
+| 29 | 05, 06, 07, 08, 10, 12, 24, 25 | table-driven tests over merged boundary modules + lock/notification surfaces |
 | 30 | 09, 24, 26, 27 | documents final behavior |
 | 31 | 28, 30 | ships only after CI + docs are green |
 
@@ -89,7 +89,7 @@ Anything not covered by an issue below is a non-goal for v1 (DESIGN §1.4) or a 
 
 | Wave | Issues | Parallelism | Gate to next wave |
 |---|---|---|---|
-| 0 Foundation | 01 → {02, 03} → 04 | 02∥03 | CI green; `earmark --version`, `config`, empty DB migrate |
+| 0 Foundation | 01 → 02 → {03, 04} | 03∥04 | CI green; `earmark --version`, `config`, empty DB migrate |
 | 1 Capture | 05 → {06, 07, 08} → 09 | 06∥07∥08 | `add`/`list`/`ingest` work against a real iCloud folder |
 | 2 Content | {10, 11} → 12 → 13 → 14 → 15 | 10∥11 | fixture article → translated speakable paragraphs (mock + real Ollama spot check) |
 | 3 Audio | 16 → {17+18, 19, 20} ∥ 21 → 22 | providers parallel | fixture script → valid chaptered m4a (mock TTS in CI, real VOICEVOX spot check) |
@@ -101,7 +101,7 @@ Anything not covered by an issue below is a non-goal for v1 (DESIGN §1.4) or a 
 | DESIGN section | Covered by |
 |---|---|
 | §1 overview, scope, non-goals | all issues; scope guarded by Non-goals section of each issue |
-| §2.2 module layout / import rules | 01, 04 (enforced from then on) |
+| §2.2 module layout / import rules | 01, 04 (enforced from then on); `core/text.ts` 04, `core/textseg.ts` 12, `core/provider.ts` 14 |
 | §2.3 dependency set | 01, 31 |
 | §3 CLI surface | 04 (skeleton), 02 (`config`), 06 (`add`), 07 (`list/remove/requeue`), 08 (`ingest`), 24 (`run`), 25 (`log`), 26 (`schedule`), 27 (`doctor`) |
 | §4 configuration | 02 |
@@ -157,9 +157,9 @@ LLM summary/“radio show” ScriptGenerator; translation cache by content hash;
 |---|---|---|---|
 | U1 | kokoro-js / onnxruntime-node compatibility with current Node (dev machine: 26) | issue 19 start | `say` provider (issue 20) |
 | U2 | VOICEVOX engine binary path variance across install methods | issue 18 | config `enginePath` + doctor remediation |
-| U3 | iCloud sync/`.icloud` materialization behavior in headless launchd context | issues 08/26 real-world gate | `brctl download` + defer-to-next-run + doctor WARN |
+| U3 | iCloud sync/`.icloud` materialization behavior in headless launchd context | issues 08/26 real-world gate | `brctl download` + defer-to-next-run + doctor WARN; `MaterializeDatalessFiles` plist key experiment (issue 26) |
 | U4 | gemma3:12b translation throughput/quality on the dev Mac (budget §17) | issue 15 measurement | documented model downgrade (`gemma3:4b`), chunk tuning |
-| U5 | Chapter display support in target players (Files app, QuickTime, Apple Books) | issue 22 manual validation | ffprobe-verified chapters are the acceptance floor; `.m4b` variant is v2 |
+| U5 | Chapter display in target players AND single-pass ffmpeg chapter muxing (`-map_chapters`) | issue 22 checkpoint + manual validation | ffprobe-verified chapters are the acceptance floor; two-pass remux fallback specified; `.m4b` variant is v2 |
 | U6 | franc accuracy on short/mixed-language articles | issue 13 fixtures | html-lang fallback + `und` policy (DESIGN §8.4) |
 | U7 | Non-UTF-8 (Shift_JIS/EUC-JP) Japanese pages in the wild | issue 10/11 fixtures | add `iconv-lite` only if a real fixture demands it (DESIGN §8.1) |
 | U8 | VOICEVOX speaker id 3 stability across engine versions | issue 17 | id read from `/speakers` in doctor; config override |

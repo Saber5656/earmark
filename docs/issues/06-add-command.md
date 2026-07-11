@@ -2,7 +2,7 @@
 
 ## Summary
 
-Implement `earmark add <url> [--title <t>] [--note <n>]`: validate, normalize, dedupe against the queue, insert as `queued` with `source='cli'`, and print the result.
+Implement `earmark add <url> [--title <t>] [--note <n>] [--json]`: validate, normalize, dedupe against the articles table (all statuses), insert as `queued` with `source='cli'`, and print the result.
 
 ## Context
 
@@ -14,20 +14,22 @@ This is the Mac-side capture channel (DESIGN §1.1 step 2, §3). It composes iss
 
 ## Detailed Requirements
 
-1. Signature: `earmark add <url>` with options `--title <string>` (≤ 500 chars, else usage error 2), `--note <string>` (≤ 2000 chars). Exactly one positional URL (commander enforces; extra args → exit 2).
-2. Flow: `validateCaptureUrl` → invalid: stderr `error (EARMARK_URL_INVALID): <reason>` exit 2 (user input error). Valid → `normalizeUrl` → `insertArticle({url: raw-as-given-trimmed, normalizedUrl, title, note, source:'cli'})`.
-3. Duplicate handling (repository returns existing row): print to stdout `already exists: <id> (status: <status>, added: <YYYY-MM-DD>)` and hint `use: earmark requeue <id>` when status is `failed|digested|archived`; **exit 0** (idempotent capture — safe for shell aliases and Shortcuts-over-ssh later).
-4. Success output (stdout, single line): `queued: <id>  <title-or-url>` where title falls back to the raw URL when absent. With global `--json`: `{"result":"queued"|"duplicate","article":{id,url,normalizedUrl,status,title,addedAt}}` and nothing else on stdout.
-5. Title/note are stored verbatim except: strip control characters (reuse logger sanitization util from issue 04 — export it from `core/logger.ts` as `stripControl(s)`), trim, collapse internal newlines in title to spaces.
-6. No fetching, no network at add time (capture stays instant; content work happens in the morning run).
+1. Signature: `earmark add <url>` with options `--title <string>`, `--note <string>`, `--json` (a command option per issue 04's pattern; DESIGN §3 notes it). Exactly one positional URL (commander enforces; extra positionals → exit 2).
+2. Flow: `validateCaptureUrl` → invalid: stderr `error (URL_INVALID): <reason>`, exit 2 (user input error). Valid → `normalizeUrl` → `articleRepo.insert({url: trimmed-raw, normalizedUrl, title, note, source:'cli'})`. DB open failure from a broken better-sqlite3 native binding → exit 1 with remediation hint `try: npm rebuild better-sqlite3` (this command owns that hint per issue 04 req 9).
+3. Sanitization (exact order, applied to title and note before length checks): `stripControl` (issue 04 `core/text.ts` — removes ANSI sequences, C0 except `\n`, C1, zero-width, bidi) → title only: replace `\n` runs with a single space → trim. Then length limits: title ≤ 500 chars, note ≤ 2000 chars — exceeding after sanitization → exit 2 usage error. Note keeps its newlines.
+4. Duplicate handling (repository returns `{duplicate}`): stdout `already exists: <id> (status: <status>, added: <YYYY-MM-DD>)` where the date is `added_at.slice(0, 10)` (UTC); append hint `use: earmark requeue <id>` when status is `failed|digested|archived`; **exit 0** (idempotent capture — safe for shell aliases and automation).
+5. Success output (stdout, single line): `queued: <id>  <title-or-url>` (title falls back to the trimmed raw URL). With `--json`: `{"result":"queued"|"duplicate","article":{id,url,normalizedUrl,status,title,addedAt}}` as the only stdout output.
+6. No fetching, no network at add time (capture stays instant; content work happens in the morning run). The command module must not import anything from `src/content/`.
 
 ## Acceptance Criteria
 
-- [ ] `earmark add https://example.com/a?utm_source=x` then `earmark add https://example.com/a` → second prints `already exists` with the first id, exit 0, and only one row exists.
-- [ ] `earmark add javascript:alert(1)` → exit 2, `EARMARK_URL_INVALID`, no row.
-- [ ] `--title` with embedded `\x1b[31m` stores stripped text.
+- [ ] `earmark add https://example.com/a?utm_source=x` then `earmark add https://example.com/a` → second prints `already exists` with the first id and the `added:` date from `added_at.slice(0,10)`, exit 0, one row total.
+- [ ] `earmark add javascript:alert(1)` → exit 2, `URL_INVALID`, no row; extra positional (`add u1 u2`) → exit 2.
+- [ ] Length limits: 501-char `--title` and 2001-char `--note` (after sanitization) → exit 2, no row; a title that only exceeds 500 chars **before** stripping ANSI noise is accepted.
+- [ ] Sanitization: `--title` with ANSI CSI + newline + bidi stores single-line stripped text; `--note` with newlines stores them (control chars stripped).
 - [ ] `--json` output is valid JSON matching the shape above in both queued and duplicate cases.
 - [ ] DB row: `source='cli'`, `status='queued'`, `retry_count=0`, timestamps ISO-8601 UTC.
+- [ ] No-network guard: test asserts the command module's import graph contains no `src/content/` module (static check on the built file or eslint-restricted import for `cli/commands/add.ts`).
 
 ## Validation
 

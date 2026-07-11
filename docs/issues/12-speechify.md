@@ -10,14 +10,14 @@ Full-text reading is the v1 product (P5); listenability depends on these rules (
 
 ## Scope
 
-- `src/content/speechify.ts` (+ export of `splitSentences`, `estimateMinutes`), i18n placeholder strings added to `src/core/i18n.ts` (create the file with just these entries; issue 21 extends it), tests.
+- `src/content/speechify.ts` (`speechify`, `estimateMinutes`, `countWords`), `src/core/textseg.ts` (`splitSentences` — lives in `core/` so `tts/` and `translate/` may import it without violating DESIGN §2.2 layering), i18n placeholder strings added to `src/core/i18n.ts` (create the file with just these entries; issue 21 extends it), tests.
 
 ## Detailed Requirements
 
 1. API: `speechify({contentHtml, placeholderLang: 'ja'|'en'}) → SpeakableDoc` where `SpeakableDoc = { paragraphs: string[] }`. `placeholderLang` is the configured output language (DESIGN §8.3 note: placeholders are emitted in output language; if the body is later translated, translators keep/carry them).
 2. Implementation approach: parse `contentHtml` with jsdom, walk the body applying the DESIGN §8.3 rule table in order. Encode each rule exactly:
-   - R1 `<pre>`, and `<code>` blocks whose text > 40 chars → one placeholder paragraph `（コード例は省略）` / `(code sample omitted)`; consecutive placeholder paragraphs collapse to one.
-   - R2 inline `<code>` ≤ 40 chars → literal text inline.
+   - R1 every `<pre>` and every block-level `<code>` (parent is not a phrasing context: `p/li/a/span/em/strong/td/h1-h6`) → one placeholder paragraph `（コード例は省略）` / `(code sample omitted)` **regardless of length**; consecutive placeholder paragraphs collapse to one.
+   - R2 inline `<code>` (phrasing context) with text ≤ 40 chars → literal text inline; longer inline `<code>` → inline placeholder `（コード）` / `(code)`.
    - R3 `<table>` → placeholder paragraph `（表は省略）` / `(table omitted)`.
    - R4 `<img>/<figure>/<svg>/<video>/<iframe>` → if `alt` or `<figcaption>` text present: paragraph `図: <text>` / `Figure: <text>`; else drop. Nested figure+img emits once.
    - R5 `<a>` → anchor text; anchor text that itself matches `^https?://` → hostname only.
@@ -31,18 +31,19 @@ Full-text reading is the v1 product (P5); listenability depends on these rules (
    - R13 emoji kept.
    - Paragraph boundaries: block-level elements (`p, h1-6, li, blockquote children, pre/table placeholders, figure captions, br+br`) delimit paragraphs.
 3. Placeholder strings live in `core/i18n.ts` under keys `speechify.codeOmitted|tableOmitted|figure|quotePrefix` with `ja`/`en` variants exactly as written above.
-4. `splitSentences(text, lang: 'ja'|'en'|string): string[]` — `Intl.Segmenter(langTag, {granularity: 'sentence'})` with mapping: known 639-1 code passed through, `und`/unknown → `'en'`. Trims segments, drops empties. Guaranteed: `join('')` differs from input only by trimmed whitespace.
-5. `estimateMinutes(text, lang)`: ja (and `und` treated as ja when outputLanguage is ja? NO — rule: `lang === 'ja'` → `ceil(chars/400)`; otherwise `ceil(words/160)` where words = whitespace-split count; minimum 1. (DESIGN §8.6.)
-6. Word count: export `countWords(text, lang)` used for `articles.word_count` (ja → chars, else words; document the semantic in code).
+4. `splitSentences(text, lang: 'ja'|'en'|string): string[]` (in `src/core/textseg.ts`) — `Intl.Segmenter(langTag, {granularity: 'sentence'})` with mapping: known 639-1 code passed through, `und`/unknown → `'en'`. Segments are trimmed and empties dropped; consumers must NOT reconstruct the original by concatenation (inter-sentence whitespace is not preserved) — consumers merge with their own separator rules (issues 14/16).
+5. `estimateMinutes(text, lang)`: `lang === 'ja'` → `ceil(chars/400)`; **all other values including `'und'`** → `ceil(words/160)` where words = whitespace-split count; minimum 1. (DESIGN §8.6.)
+6. `countWords(text, lang)` used for `articles.word_count`: ja → code-point count of non-whitespace chars; all other langs → whitespace-split word count (document the semantic in code; aligned with `estimateMinutes` denominators).
 7. Determinism and purity: no config, no clock, no randomness; property test (same input twice → identical output).
 
 ## Acceptance Criteria
 
 - [ ] One fixture per rule R1–R13 passes with exact expected paragraph arrays (table-driven, both placeholder languages).
-- [ ] Composite fixture (the issue-11 `ja-blog.html` extractor output) snapshot matches and contains no `<` characters, no control chars (regex assert), no double spaces.
+- [ ] Composite fixture: `test/fixtures/extractor/ja-blog.content.html` (committed by issue 11) passed as `contentHtml` — snapshot matches and contains no `<` characters, no control chars (regex assert), no double spaces.
 - [ ] Hostile fixture with ANSI `\x1b[31m`, bidi `‮`, zero-width joins → all stripped (byte-level assert).
-- [ ] `splitSentences` cases: ja 「今日は晴れです。明日は雨。」→ 2; en with abbreviations "Dr. Smith went home. He slept." → 2 (accept Intl.Segmenter behavior as ground truth — snapshot, don't fight it); empty string → [].
-- [ ] `estimateMinutes('あ'.repeat(1200),'ja') === 3`; `estimateMinutes(<320 words>,'en') === 2`; minimum 1 for tiny text.
+- [ ] `splitSentences` cases: ja 「今日は晴れです。明日は雨。」→ 2; en with abbreviations "Dr. Smith went home. He slept." → 2 (accept Intl.Segmenter behavior as ground truth — snapshot, don't fight it); empty string → []; no concatenation-roundtrip assertion (explicitly not guaranteed).
+- [ ] `estimateMinutes('あ'.repeat(1200),'ja') === 3`; `estimateMinutes(<320 words>,'en') === 2`; `'und'` uses the word rule; minimum 1 for tiny text.
+- [ ] `countWords` matrix: ja text (non-whitespace code points), en text (word count), `und` (word count), empty and whitespace-only input → 0.
 - [ ] Purity property test passes.
 
 ## Validation
@@ -51,7 +52,7 @@ Full-text reading is the v1 product (P5); listenability depends on these rules (
 
 ## Dependencies
 
-11 (input contract + shared fixtures).
+04 (`core/text.ts` sanitizer reused for R11), 11 (input contract + committed extractor fixture).
 
 ## Non-goals
 

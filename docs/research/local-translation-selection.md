@@ -39,7 +39,7 @@ Paragraph fidelity matters (paragraph gaps drive audio pacing). Chunks are sent 
 <paragraph text>
 ```
 
-with the system prompt requiring identical block markers in the output. Parser splits on `^\[\[\d+\]\]$` lines; block-count mismatch or empty block → one retry → article failure `EARMARK_TRANSLATE_INVALID_OUTPUT`. This is more robust than JSON output (models corrupt JSON escaping in long prose) and than free text (loses paragraph mapping).
+with the system prompt requiring identical block markers in the output. Parser splits on `^\[\[\d+\]\]$` lines; block-count mismatch or empty block → one retry → article failure `TRANSLATE_INVALID_OUTPUT`. Numbering is chunk-local (each provider request sees blocks 1..n; requests are independent LLM contexts). This is more robust than JSON output (models corrupt JSON escaping in long prose) and than free text (loses paragraph mapping).
 
 ## Risks / follow-ups
 

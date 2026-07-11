@@ -33,30 +33,34 @@ This is the last pipeline stage and the product's deliverable (ADR-003). Chapter
    - per chapter: `[CHAPTER]\nTIMEBASE=1/1000\nSTART=<ms>\nEND=<ms>\ntitle=<escaped>`
    - escaping per ffmpeg metadata spec: backslash-escape `=`, `;`, `#`, `\` and newline in values; titles also control-stripped and ≤ 250 chars.
 4. Concat list file: ffconcat format `ffconcat version 1.0` + `file '<path>'` lines with single-quote escaping (`'` → `'\''`); paths are workDir-internal (ULID-named) but escape anyway.
-5. ffmpeg invocation (single pass; exact argv, execFile, timeout 10 min):
+5. ffmpeg invocation (single pass; exact argv, execFile; timeout via injected option, default 10 min — see req 10):
    ```
    <ffmpeg> -hide_banner -loglevel error -y \
-     -f concat -safe 0 -i <list.txt> -i <meta.txt> \
-     -map_metadata 1 -map 0:a \
+     -f concat -safe 0 -i <list.txt> \
+     -f ffmetadata -i <meta.txt> \
+     -map_metadata 1 -map_chapters 1 -map 0:a \
      -af loudnorm=I=-16:TP=-1.5:LRA=11 \
      -c:a aac -b:a 64k -ar 24000 -ac 1 \
      -movflags +faststart \
      <workDir>/digest.m4a
    ```
-   **Implementation checkpoint**: verify chapters survive this exact pipeline with the installed ffmpeg (chapters via `-map_metadata 1` from an FFMETADATA input is the documented mechanism); if the single pass drops chapters, fall back to two passes (encode → `-i digest.m4a -i meta.txt -map_metadata 1 -c copy remux.m4a`) and record which path was needed in code comment + PR (U5-adjacent evidence).
+   (`-f ffmetadata` forces the metadata demuxer regardless of extension; `-map_chapters 1` maps chapters explicitly — `-map_metadata` alone does not carry chapters reliably.) **Implementation checkpoint**: verify chapters survive this exact pipeline with the installed ffmpeg; if the single pass still drops chapters, fall back to two passes (encode → `-i digest.m4a -f ffmetadata -i meta.txt -map_metadata 1 -map_chapters 1 -c copy remux.m4a`) and record which path was needed in a code comment + PR (U5-adjacent evidence).
 6. Verification before publish (`ffprobe.ts`): `execFile(ffprobe, ['-v','error','-print_format','json','-show_chapters','-show_format', file])` → assert: format duration within ±2% of plan, chapter count/titles/START order exactly match plan (±200 ms per DESIGN §9.4). Mismatch → `EarmarkError ASSEMBLE_FAILED` (workDir kept for debugging).
 7. Atomic publish: target name `<prefix>-<date>.m4a` (sequence ≥ 2 → `<prefix>-<date>-<seq>.m4a`); copy `digest.m4a` to `<outputDir>/.<target>.part` then `fs.rename` to final (same volume by construction); ensure outputDir exists; pre-existing final file without `--force` semantics is the caller's concern (orchestrator checks idempotency before assembling — this module overwrites `.part` freely, never overwrites a final file: existing final → `ASSEMBLE_FAILED` "target exists").
 8. workDir cleanup on success (delete run's work directory); on failure keep + prune-old-workdirs helper `pruneWorkDirs(cacheDir, olderThanDays=7)` exported for the orchestrator.
-9. Failure mapping: ffmpeg non-zero → `ASSEMBLE_FAILED` with last 500 chars of stderr (control-stripped).
+9. Failure mapping: ffmpeg non-zero → `ASSEMBLE_FAILED` with last 500 chars of stderr (control-stripped via issue 04 `stripControl`).
+10. Options parameter for testability: `assemble(input, opts?: { execTimeoutMs?: number /* default 600_000 */ })` — applied to both ffmpeg and ffprobe invocations.
 
 ## Acceptance Criteria
 
 - [ ] `planConcat` unit tables: 2 chapters × (2 wavs w/ paragraph break + 1 without) with gaps 1500/500 → exact expected element sequence and chapter times (hand-computed values in the test).
 - [ ] FFMETADATA escaping: title `a=b;c#d\e\nf` roundtrips through ffprobe chapter title byte-exact (integration assert).
-- [ ] Integration (real ffmpeg): 3 chapters of silence-wavs (issue 16 generator) → m4a exists; ffprobe chapters count 3, titles match (incl. ja title `『テスト』`), starts within ±200 ms of plan, duration within ±2%; tags title/album/genre/date present.
+- [ ] Chapter integration (real ffmpeg): 3 chapters of test WAVs → m4a exists; ffprobe chapters count 3, titles match (incl. ja title `『テスト』`), starts within ±200 ms of plan, duration within ±2%.
+- [ ] Tag assertions exact: `title` = `earmark 2026年7月11日` for ja (and one en case `earmark July 11, 2026` via a formatter unit test), `album=earmark`, `artist=earmark`, `genre=Podcast`, `date=2026-07-11` (ffprobe format tags).
+- [ ] Loudnorm smoke on a **non-silent** fixture (440 Hz tone WAVs generated in-test — silence would measure −inf LUFS): output integrated loudness −16 ±1.5 LUFS via a `loudnorm=print_format=json` measurement pass on the OUTPUT file.
+- [ ] Cleanup semantics: success deletes the run's work dir; injected ffprobe-mismatch failure keeps it; `pruneWorkDirs(cacheDir, 7)` deletes only earmark work dirs older than 7 days (fixture mtimes) and never a passed-in current dir.
 - [ ] Existing final file → `ASSEMBLE_FAILED` without touching it; `.part` file never left behind on failure (assert dir listing).
-- [ ] Loudnorm smoke: assembled file's integrated loudness within −16 ±1.5 LUFS measured via `ffmpeg -af loudnorm=print_format=json` second pass in the test (parse `input_i` of the measurement run on the OUTPUT file).
-- [ ] Ten-minute timeout enforced via injected timeout for testability.
+- [ ] `execTimeoutMs` option enforced (tiny timeout + injected slow stub → `ASSEMBLE_FAILED`).
 
 ## Validation
 

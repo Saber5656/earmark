@@ -29,33 +29,37 @@ P7 requires translating any-language articles into the output language. ADR-004 
    ```
    (No progress callback on the provider — progress is a `translateDocument` concern.)
 3. `needsTranslation(detectedLang, outputLanguage) → boolean`: false iff equal; `'und'` → true (DESIGN §8.4).
-4. Block codec (chunk-local; used by providers to build/parse the wire text):
-   - `encodeBlocks(paragraphs: string[]) → string`: block `i` (1-based) rendered as `[[i]]\n<text>\n`. Precondition: each paragraph is single-line (speechify guarantees no `\n`); assert and throw on violation. If a paragraph's entire text itself matches `^\[\[\d+\]\]$`, prefix one space at encode time (decode trims, so content is preserved semantically).
-   - `decodeBlocks(output: string, expectedCount: number) → string[]`: delimiter lines are lines exactly matching `^\[\[(\d+)\]\]$`; indices must be exactly `1..expectedCount` in order; each block joined from its content lines with a single space, trimmed, must be non-empty; violations throw `BlockFormatError` (typed; providers catch for retry).
-5. Chunker `packChunks(paragraphs: string[], chunkChars: number) → {chunks: Chunk[], oversized: boolean}` where
+4. Block codec (chunk-local; used by providers to build/parse the wire text). Codec guarantee: lossless roundtrip for **speechify-normalized paragraphs** (single-line, trimmed, non-empty); delimiter-lookalike paragraphs are normalized by the leading-space escape below.
+   - `encodeBlocks(paragraphs: string[]) → string`: block `i` (1-based) rendered as `[[i]]\n<text>\n`. Precondition: each paragraph is single-line and non-empty (speechify guarantees this); assert and throw on violation. If a paragraph's entire text matches `^\[\[\d+\]\]$`, prefix one space at encode time (decode trims).
+   - `decodeBlocks(output: string, expectedCount: number) → string[]`: delimiter lines are lines exactly matching `^\[\[(\d+)\]\]$`; indices must be exactly `1..expectedCount` in order; each block joined from its content lines with a single space, trimmed, must be non-empty; violations throw `BlockFormatError` — `export class BlockFormatError extends Error { name = 'BlockFormatError' }` from `src/translate/pipeline.ts` (typed; providers catch for retry).
+5. Chunker `packChunks(paragraphs: string[], chunkChars: number, sourceLang: string) → {chunks: Chunk[], oversized: boolean}` (`sourceLang` feeds `splitSentences`; `und` → `'en'` per issue 12) where
    ```ts
    type Chunk = { items: Array<{ originalIndex: number; text: string }> };  // originalIndex: 0-based body-paragraph index
    ```
-   - greedy: append whole paragraphs while `sum(item lengths) + marker overhead ≤ chunkChars`
+   - greedy: append whole paragraphs while the chunk stays within budget — the size measure is exactly `encodeBlocks(chunk items' texts).length ≤ chunkChars` (marker overhead thereby included by construction)
    - a single paragraph longer than `chunkChars` is split at sentence boundaries (`splitSentences` from `core/textseg.ts`, issue 12) into multiple items sharing the same `originalIndex`
    - a single sentence > chunkChars is emitted alone as an oversized item; `oversized: true` in the result (caller logs; this function stays pure — no logger)
    - never split inside a sentence.
-6. `translateDocument({provider, title, paragraphs, sourceLang, targetLang, chunkChars, onProgress}) → Promise<{title, paragraphs}>`:
+6. `translateDocument({provider, title, paragraphs, sourceLang, targetLang, chunkChars, onProgress}) → Promise<{title, paragraphs}>`. Validation ownership (explicit): per-request transport/format/ratio validation and the single retry live in the **provider** (issue 15); `translateDocument` validates only structure it owns — chunk result paragraph count per call, and total reassembled paragraph count. Details:
    - asserts `sourceLang !== targetLang` (callers gate with `needsTranslation`)
    - title translated first as its own single-paragraph chunk
    - body chunks from `packChunks`, each translated sequentially via `provider.translate({paragraphs: chunk items' texts, ...})`
    - `onProgress(doneChunks, totalChunks)` called by `translateDocument` exactly once after each completed chunk (title chunk included in the counts)
-   - reassembly: group returned texts by `originalIndex`, join multi-item groups with a single space, order by index; output paragraph count must equal input count → else throw `EarmarkError TRANSLATE_INVALID_OUTPUT` (structural failure after the provider already succeeded transport-wise).
+   - each `provider.translate` result must have exactly the chunk's item count → else `EarmarkError TRANSLATE_INVALID_OUTPUT`
+   - reassembly: group returned texts by `originalIndex`, join multi-item groups with a single space, order by index; total output paragraph count must equal input count → else `TRANSLATE_INVALID_OUTPUT` (structural failure after the provider already succeeded transport-wise).
 7. `PassthroughProvider` (`src/translate/passthrough.ts`, shipped in src for e2e reuse): returns each paragraph as `⟪tr:<targetLang>⟫` + original text — deterministic, count-preserving; `checkAvailability` always ok. Not selectable via config (constructed directly by tests).
 8. Everything pure/deterministic; no clock, no network, no logging.
 
 ## Acceptance Criteria
 
-- [ ] Codec roundtrip property: randomized single-line paragraph arrays (seeded loop ≥ 200 cases, lengths 0–4 paragraphs × 0–3000 chars, including paragraphs that are exactly `[[3]]` and paragraphs containing `[[2]]` mid-text) encode→decode losslessly modulo the documented trim/space-prefix rule.
+- [ ] Codec roundtrip property: randomized single-line **non-empty** paragraph arrays (seeded loop ≥ 200 cases, 0–4 paragraphs × 1–3000 chars, including paragraphs that are exactly `[[3]]` and paragraphs containing `[[2]]` mid-text) encode→decode losslessly modulo the documented trim/space-prefix rule (empty-block rejection stays in the failure table only).
 - [ ] `encodeBlocks` throws on a paragraph containing `\n`.
 - [ ] `decodeBlocks` failure table: missing index, out-of-order, duplicate index, empty block, extra trailing block, zero delimiters → `BlockFormatError`.
 - [ ] Chunker: 100 × 100-char paragraphs at chunkChars 2500 → every chunk ≤ 2500 incl. marker overhead; a 6,000-char paragraph splits at sentence bounds into items sharing one `originalIndex` and reassembles to exactly one output paragraph; a 6,000-char single sentence → `oversized: true`.
-- [ ] `translateDocument` with PassthroughProvider: count/order preserved; every output paragraph carries the `⟪tr:ja⟫` prefix; `onProgress` called exactly `totalChunks` times with monotonically increasing `done`.
+- [ ] `translateDocument` with PassthroughProvider: count/order preserved; every output paragraph carries the `⟪tr:ja⟫` prefix; the **title is translated as its own first chunk** (progress fires for it first); `onProgress` called exactly `totalChunks` times with monotonically increasing `done`; returned `title` carries the marker.
+- [ ] `translateDocument` asserts on `sourceLang === targetLang` (throws).
+- [ ] Split-paragraph reassembly inside `translateDocument`: a 6,000-char paragraph goes out as multiple items and comes back as exactly one paragraph in position.
+- [ ] A misbehaving fake provider returning one paragraph too few for a chunk → `TRANSLATE_INVALID_OUTPUT`.
 - [ ] `needsTranslation('und','ja') === true`, `('ja','ja') === false`, `('en','ja') === true`.
 
 ## Validation
@@ -64,7 +68,7 @@ P7 requires translating any-language articles into the output language. ADR-004 
 
 ## Dependencies
 
-02 (config types), 12 (`splitSentences` in `core/textseg.ts`), 13 (lang code semantics).
+02 (config types), 04 (`EarmarkError`/`core/errors.ts`), 12 (`splitSentences` in `core/textseg.ts`), 13 (lang code semantics).
 
 ## Non-goals
 

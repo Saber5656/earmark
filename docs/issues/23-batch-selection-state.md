@@ -20,13 +20,15 @@ DESIGN §11.2/§11.5 fix selection and idempotency; §12.1 fixes the failure cla
    - run-scoped: `TTS_UNAVAILABLE`, `TTS_SYNTH_FAILED`, `AUDIO_BAD_WAV`, `ASSEMBLE_FAILED`, `DB_NEWER_SCHEMA`, `DB_ILLEGAL_TRANSITION`, `CONFIG_INVALID`, `LOCK_HELD`
    - any other code, any non-`EarmarkError` → `run` (fail safe: don't burn an article's retries on infrastructure problems). `INBOX_INVALID` never reaches this function (it is a per-file ingest log code, not a thrown pipeline error).
    - `articles.last_error` stores the bare `CODE: message` string — no prefix (DESIGN §12.2).
-3. `applyArticleFailure(db, logger, articleId, err) → RunArticleFailure`: wraps repo `recordFailure` with retry limit 3; logs warn `{articleId, code, retryCount, willRetry}` via the passed logger.
+3. Two-step failure accounting (supports the orchestrator's staged persistence, issue 24):
+   - `planArticleFailure(article: Article, err) → RunArticleFailure` — **pure**: computes the would-be outcome (`retryCount = article.retry_count + 1`, `status = retryCount >= 3 ? 'failed' : 'queued'`, `willRetry`, code/message extraction) without touching the DB
+   - `applyArticleFailure(db, logger, failure: RunArticleFailure) → void` — persists a previously planned failure via repo `recordFailure` (asserting the outcome matches the plan; drift → `DB_ILLEGAL_TRANSITION`) and logs warn `{articleId, code, retryCount, willRetry}`.
 4. `RunArticleFailure` (exact contract; also consumed by issues 24/25/28):
    ```ts
    type RunArticleFailure = { articleId: string; title: string | null; code: string; message: string;
                               willRetry: boolean; retryCount: number; status: 'queued' | 'failed' };
    ```
-5. `buildQueueStats(db, runFailures: RunArticleFailure[]) → QueueStats` (issue 21 input shape): `failedThisRun` = entries with `status === 'queued'` (will retry); `permanentlyFailedThisRun` = entries with `status === 'failed'`; `queueRemaining` = count of `queued` articles after this run's transitions — this **includes** retryable soft-failed articles (they are still queued) and excludes digested ones.
+5. `buildQueueStats(db, runFailures: RunArticleFailure[]) → QueueStats` (issue 21 input shape; works on PLANNED failures before persistence): `failedThisRun` = entries with `status === 'queued'` (will retry); `permanentlyFailedThisRun` = entries with `status === 'failed'`; `queueRemaining` = count of articles that will remain `queued` after this run's transitions (current queued count − batch size + planned-retryable failures) — retryable soft-failed articles are **included**, digested ones excluded.
 6. Idempotency helpers (§11.5): `digestPlanForToday(db, {force, now}) → {date, sequence} | {alreadyExists: {date, sequence}}` — date = `localDateString(now)`; without force and existing sequence ≥ 1 → alreadyExists; with force → next sequence.
 7. `localDateString(now: Date): string` — manual local getters with zero padding: `getFullYear()`, `getMonth()+1`, `getDate()` (no `Intl` — deterministic across ICU builds). The ONLY place local-date logic lives; `now` injected everywhere (no `Date.now()`/argless `new Date()` in this issue's production files — `src/pipeline/select.ts`, `src/pipeline/errors.ts`).
 8. Everything takes the db handle; no config/CLI imports (layering).
@@ -35,7 +37,7 @@ DESIGN §11.2/§11.5 fix selection and idempotency; §12.1 fixes the failure cla
 
 - [ ] Selection: seeded queue of 12 with interleaved statuses → batch of 10 oldest queued, `added_at ASC, id ASC` order proven with equal-timestamp rows.
 - [ ] Classification table test covers every code listed in req 2 (both classes), a `FETCH_HTTP_404` prefix case, an unknown code (→ run), and a plain `Error` (→ run).
-- [ ] `applyArticleFailure` ×3 on the same article: willRetry true/true/false; status queued/queued/failed; retryCount 1/2/3; returned `RunArticleFailure` fields exact.
+- [ ] `planArticleFailure` is pure (DB untouched, verified) and returns exact fields; plan→apply ×3 on the same article: willRetry true/true/false; status queued/queued/failed; retryCount 1/2/3; `applyArticleFailure` with a stale plan (article mutated in between) → `DB_ILLEGAL_TRANSITION`.
 - [ ] `buildQueueStats` on a synthetic run (2 soft-failed retryable, 1 permanent, 4 untouched queued, 10 digested) returns `failedThisRun` 2 titles, `permanentlyFailedThisRun` 1 title, `queueRemaining` **6** (4 untouched + 2 retryable).
 - [ ] Idempotency: no digest → {date, seq 1}; existing seq 1 without force → alreadyExists; with force → seq 2; date boundary test with injected `now` at 23:59:59 vs 00:00:01 local; `localDateString` zero-padding (2026-01-05).
 - [ ] Grep test scoped to `src/pipeline/select.ts` + `src/pipeline/errors.ts`: no `Date.now()` / argless `new Date()`.
@@ -46,7 +48,7 @@ DESIGN §11.2/§11.5 fix selection and idempotency; §12.1 fixes the failure cla
 
 ## Dependencies
 
-03.
+03, 04 (logger for `applyArticleFailure`).
 
 ## Non-goals
 

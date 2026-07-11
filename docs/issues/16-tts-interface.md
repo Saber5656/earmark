@@ -15,15 +15,17 @@ ADR-004 keeps providers thin; sizing text into engine-friendly utterances and pr
 ## Detailed Requirements
 
 1. `tts/types.ts` per DESIGN §10.1: `TtsUtterance = {text, index}`; `TtsProvider` with `id`, `lang`, `checkAvailability(): Promise<ProviderHealth>` (type from `core/provider.ts`, issue 14), optional `prepare()`, `synthesize(u, outWavPath) → Promise<{durationMs}>`, optional `dispose()`.
-2. Utterance splitter `splitUtterances(paragraphs: string[], lang: 'ja'|'en') → UtterancePlan`:
+2. Utterance splitter — exact signature:
    ```ts
    type UtterancePlan = Array<{ text: string; paragraphBreakAfter: boolean }>;
+   function splitUtterances(paragraphs: string[], lang: 'ja'|'en'): { plan: UtterancePlan; hardSplits: number };
    ```
+   (both types exported from `src/tts/utterance.ts`)
    - **target merge limits**: ja 120 chars, en 280 chars — sentences (from `splitSentences` in `core/textseg.ts`, issue 12) are greedily merged (joined with a single space for en, no separator for ja) while the merged length stays ≤ the limit
    - exception: a single sentence longer than the limit but ≤ 2× the limit stays whole (one utterance)
-   - a single sentence > 2× the limit is split at clause punctuation (`、` `,` `;` `：` `:`), searching backward from the limit; splitting recurses until every piece is ≤ the limit or no clause point exists, in which case the piece is hard-split at the limit; hard splits are reported via the return value's companion `{hardSplits: number}` (function returns `{plan, hardSplits}`; caller logs metadata only — never raw text)
-   - `paragraphBreakAfter: true` on exactly the last utterance of each source paragraph
-   - empty/whitespace paragraphs dropped; reading order preserved; pure function.
+   - a single sentence > 2× the limit is split at clause punctuation `、` `,` `;` `:` plus fullwidth `：` (a deliberate refinement of DESIGN §10.1's list, mirrored there), searching backward from the limit; splitting recurses on each remainder until every piece is ≤ the limit; a piece with no clause point is hard-split at the limit
+   - `hardSplits` = the number of split boundaries created WITHOUT clause punctuation (0 when clause points sufficed)
+   - `paragraphBreakAfter: true` on exactly the last utterance of each non-empty source paragraph (empty/whitespace paragraphs dropped first); reading order preserved; pure function (caller logs `{lang, hardSplits}` metadata only — never raw text).
 3. `wav.ts` — contract constants exported and used everywhere (no magic numbers): `WAV_SAMPLE_RATE = 24000`, `WAV_CHANNELS = 1`, `WAV_BITS = 16`.
    - `writeSilenceWav(path, durationMs)`: canonical 44-byte RIFF/WAVE PCM header + `round(24000 * durationMs / 1000) * 2` zero bytes; header fields exact (ChunkSize, Subchunk2Size, byteRate 48000, blockAlign 2); deterministic bytes for a given duration.
    - `writePcm16Wav(path, samples: Int16Array, sampleRate: number)`: same canonical header shape with the given rate; used by providers converting engine output.
@@ -34,11 +36,11 @@ ADR-004 keeps providers thin; sizing text into engine-friendly utterances and pr
 - [ ] Interface contract: tests include a compiling `FakeTtsProvider implements TtsProvider` writing silence WAVs (also exported from `test/util/` for issues 24/28) — proves the public types are implementable as intended.
 - [ ] Splitter exact tables (both languages), including these fixed cases:
    - ja paragraph = five sentences of exactly 40 chars each → utterances of 120+80 chars (3 sentences merged, then 2)
-   - ja single 130-char sentence → one utterance (≤ 2× rule)
-   - ja single 250-char sentence with a `、` at position 100 → split at the `、`, recursion terminates, pieces ≤ 120
-   - clause-free 300-char ja sentence → hard-split at 120/120/60 with `hardSplits: 1` reported
+   - ja single 130-char sentence → one utterance (≤ 2× rule), `hardSplits: 0`
+   - ja single 250-char sentence with its only `、` at position 100 → pieces of exactly 100 / 120 / 30 chars (clause split at 100; clause-free 150-remainder hard-split at 120), `hardSplits: 1`
+   - clause-free 300-char ja sentence → 120 / 120 / 60, `hardSplits: 2` (two boundaries created without clause punctuation)
    - en behaves with the 280 limit and space-joined merging
-   - `paragraphBreakAfter` marks exactly one utterance per input paragraph.
+   - `paragraphBreakAfter` marks exactly one utterance per non-empty input paragraph; empty paragraphs produce none.
 - [ ] Silence WAV: 500 ms file = canonical header + exactly 24,000 data bytes (byte-snapshot); `wavDurationMs` reads back 500.
 - [ ] `writePcm16Wav` roundtrip: 1,000 samples at 24 kHz → duration ≈ 42 ms; byte-level header snapshot.
 - [ ] Duration reader matrix: extra `LIST` chunk before `data` (fixture) → ok; odd-sized chunk followed by `data` → ok (padding honored); truncated file, wrong magic, missing `fmt `, missing `data`, audioFormat 3 (float) → `AUDIO_BAD_WAV` each.

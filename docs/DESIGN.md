@@ -545,7 +545,7 @@ export interface TtsProvider {
 }
 ```
 
-Utterance sizing (shared splitter, lives with script→tts glue): merge sentences (§8.3 segmentation) into utterances of ≤ 120 chars (ja) / ≤ 280 chars (en); never split inside a sentence unless a single sentence exceeds 2× the limit (then split at clause punctuation `、,;:`). One utterance = one provider call = one wav.
+Utterance sizing (shared splitter, lives with script→tts glue): merge sentences (§8.3 segmentation) into utterances of ≤ 120 chars (ja) / ≤ 280 chars (en); never split inside a sentence unless a single sentence exceeds 2× the limit (then split at clause punctuation `、 , ; : ：`, recursing on remainders; clause-free pieces hard-split at the limit). One utterance = one provider call = one wav.
 
 ### 10.2 VOICEVOX provider (ja)
 

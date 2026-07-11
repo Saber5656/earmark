@@ -75,7 +75,7 @@ Anything not covered by an issue below is a non-goal for v1 (DESIGN §1.4) or a 
 | 20 | 02, 16 | needs ffmpeg path from config for AIFF→WAV |
 | 21 | 02, 12, 14 | consumes PreparedArticle model |
 | 22 | 02, 16, 21 | chapter plan model from 21, WAV contract from 16 |
-| 23 | 03 | |
+| 23 | 03, 04 | logger for applyArticleFailure |
 | 24 | 04, 08, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23 | en path unit-tested with a fake provider; real en providers land in 19/20 and e2e scenario D |
 | 25 | 24 | renders run summary produced by 24 |
 | 26 | 04, 24 | plist invokes `run --trigger launchd` |
